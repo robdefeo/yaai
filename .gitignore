@@ -1,0 +1,32 @@
+# macOS
+.DS_Store
+
+# Rust
+target/
+*.rs.bk
+*.rlib
+*.prof*
+coverage/
+
+# Bun / Node
+node_modules/
+dist/
+build/
+bun.lockb
+*.log
+.env*
+
+# SQLite
+*.db
+*.db-shm
+*.db-wal
+.sqlx/
+
+# Traces output
+traces/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+Thumbs.db
