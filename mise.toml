@@ -1,0 +1,8 @@
+[tools]
+bun = "1.2.5"
+"cargo:grcov" = "0.10.7"
+just = "1.38.0"
+
+[tools.rust]
+version = "1.93.1"
+postinstall = "rustup component add llvm-tools"
