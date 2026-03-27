@@ -13,6 +13,16 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+/// Build a [`reqwest::Client`] with sensible defaults: 10 s connect timeout,
+/// 120 s overall request timeout.
+pub(crate) fn default_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .expect("failed to build reqwest client")
+}
+
 pub use claude::ClaudeClient;
 pub use openai::OpenAiClient;
 pub use stub::StubClient;

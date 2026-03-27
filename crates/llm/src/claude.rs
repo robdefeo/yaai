@@ -22,6 +22,16 @@ pub struct ClaudeClient {
 
 impl ClaudeClient {
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
+        Self::with_client(api_key, model, crate::default_http_client())
+    }
+
+    /// Construct with a caller-supplied [`reqwest::Client`] for full control
+    /// over timeouts, proxies, TLS, etc.
+    pub fn with_client(
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        client: reqwest::Client,
+    ) -> Self {
         let model = model.into();
         let model = if model.is_empty() {
             DEFAULT_MODEL.to_string()
@@ -31,7 +41,7 @@ impl ClaudeClient {
         Self {
             api_key: api_key.into(),
             model,
-            client: reqwest::Client::new(),
+            client,
         }
     }
 }

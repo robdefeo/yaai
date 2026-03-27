@@ -16,10 +16,20 @@ pub struct OpenAiClient {
 
 impl OpenAiClient {
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
+        Self::with_client(api_key, model, crate::default_http_client())
+    }
+
+    /// Construct with a caller-supplied [`reqwest::Client`] for full control
+    /// over timeouts, proxies, TLS, etc.
+    pub fn with_client(
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        client: reqwest::Client,
+    ) -> Self {
         Self {
             api_key: api_key.into(),
             model: model.into(),
-            client: reqwest::Client::new(),
+            client,
         }
     }
 }
