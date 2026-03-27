@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use uuid::Uuid;
 use yaai_tracer::{EventKind, TraceEvent, Tracer};
 
@@ -12,7 +14,8 @@ fn parse_ndjson(content: &str) -> Vec<serde_json::Value> {
 #[tokio::test]
 async fn records_events_in_order() {
     let run_id = Uuid::new_v4();
-    let dir = format!("/tmp/yaai-test-traces-{run_id}");
+    let tmp = tempfile::tempdir().unwrap();
+    let dir: PathBuf = tmp.path().to_path_buf();
     let tracer = Tracer::new(run_id, &dir).unwrap();
 
     tracer.emit("agent-a", 0, EventKind::Prompt, "hello").unwrap();
@@ -21,35 +24,31 @@ async fn records_events_in_order() {
 
     tracer.close().await.unwrap();
 
-    let content = tokio::fs::read_to_string(format!("{dir}/{run_id}.ndjson")).await.unwrap();
+    let content = tokio::fs::read_to_string(dir.join(format!("{run_id}.ndjson"))).await.unwrap();
     let events = parse_ndjson(&content);
     assert_eq!(events.len(), 3);
     assert_eq!(events[0]["kind"], "prompt");
     assert_eq!(events[1]["kind"], "tool_call");
     assert_eq!(events[2]["kind"], "final_answer");
     assert!(events.iter().all(|e| e["run_id"] == run_id.to_string()));
-
-    tokio::fs::remove_dir_all(&dir).await.unwrap();
 }
 
 #[tokio::test]
 async fn flush_writes_ndjson_file() {
     let run_id = Uuid::new_v4();
-    let dir = format!("/tmp/yaai-test-traces-{run_id}");
+    let tmp = tempfile::tempdir().unwrap();
+    let dir: PathBuf = tmp.path().to_path_buf();
     let tracer = Tracer::new(run_id, &dir).unwrap();
 
     tracer.emit("agent-a", 0, EventKind::FinalAnswer, "result").unwrap();
     tracer.flush().await.unwrap();
 
-    // File is readable mid-run (before close).
-    let path = format!("{dir}/{run_id}.ndjson");
-    let content = tokio::fs::read_to_string(&path).await.unwrap();
+    let content = tokio::fs::read_to_string(dir.join(format!("{run_id}.ndjson"))).await.unwrap();
     let events = parse_ndjson(&content);
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["kind"], "final_answer");
 
     tracer.close().await.unwrap();
-    tokio::fs::remove_dir_all(&dir).await.unwrap();
 }
 
 #[tokio::test]
@@ -57,32 +56,30 @@ async fn events_visible_before_close() {
     // Verifies that flush() makes events readable without closing the tracer,
     // which is the key property for tailing a live run.
     let run_id = Uuid::new_v4();
-    let dir = format!("/tmp/yaai-test-traces-{run_id}");
+    let tmp = tempfile::tempdir().unwrap();
+    let dir: PathBuf = tmp.path().to_path_buf();
     let tracer = Tracer::new(run_id, &dir).unwrap();
 
     tracer.emit("agent-a", 0, EventKind::Prompt, "step one").unwrap();
     tracer.flush().await.unwrap();
 
-    let content = tokio::fs::read_to_string(format!("{dir}/{run_id}.ndjson")).await.unwrap();
+    let content = tokio::fs::read_to_string(dir.join(format!("{run_id}.ndjson"))).await.unwrap();
     assert_eq!(parse_ndjson(&content).len(), 1);
 
     tracer.emit("agent-a", 1, EventKind::FinalAnswer, "step two").unwrap();
     tracer.close().await.unwrap();
 
-    let content = tokio::fs::read_to_string(format!("{dir}/{run_id}.ndjson")).await.unwrap();
+    let content = tokio::fs::read_to_string(dir.join(format!("{run_id}.ndjson"))).await.unwrap();
     assert_eq!(parse_ndjson(&content).len(), 2);
-
-    tokio::fs::remove_dir_all(&dir).await.unwrap();
 }
 
 #[tokio::test]
 async fn run_id_is_stable() {
     let id = Uuid::new_v4();
-    let dir = format!("/tmp/yaai-test-traces-{id}");
-    let tracer = Tracer::new(id, &dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let tracer = Tracer::new(id, tmp.path()).unwrap();
     assert_eq!(tracer.run_id(), id);
     tracer.close().await.unwrap();
-    tokio::fs::remove_dir_all(&dir).await.unwrap();
 }
 
 #[test]
@@ -115,17 +112,16 @@ fn trace_event_new_fields() {
 #[tokio::test]
 async fn record_directly() {
     let run_id = Uuid::new_v4();
-    let dir = format!("/tmp/yaai-test-traces-{run_id}");
+    let tmp = tempfile::tempdir().unwrap();
+    let dir: PathBuf = tmp.path().to_path_buf();
     let tracer = Tracer::new(run_id, &dir).unwrap();
 
     let event = TraceEvent::new(run_id, "agent-x", 0, EventKind::ToolResult, "result").unwrap();
     tracer.record(event);
     tracer.close().await.unwrap();
 
-    let content = tokio::fs::read_to_string(format!("{dir}/{run_id}.ndjson")).await.unwrap();
+    let content = tokio::fs::read_to_string(dir.join(format!("{run_id}.ndjson"))).await.unwrap();
     let events = parse_ndjson(&content);
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["kind"], "tool_result");
-
-    tokio::fs::remove_dir_all(&dir).await.unwrap();
 }

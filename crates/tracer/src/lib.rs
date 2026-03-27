@@ -2,8 +2,9 @@
 //!
 //! Each agent run emits a sequence of [`TraceEvent`]s written to
 //! `<output_dir>/<run_id>.ndjson` as newline-delimited JSON. Events are
-//! written to disk immediately as they are recorded, so the file can be
-//! tailed while the agent is running.
+//! written asynchronously via a background task, so the file can be tailed
+//! while the agent is running. Call [`Tracer::flush`] to wait for all queued
+//! events to be written.
 
 use std::path::PathBuf;
 
@@ -85,6 +86,10 @@ impl Tracer {
     ///
     /// Events are written to `<output_dir>/<run_id>.ndjson`. The directory is
     /// created if it does not exist.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside of a Tokio runtime context.
     pub fn new(run_id: Uuid, output_dir: impl Into<PathBuf>) -> Result<Self> {
         let output_dir = output_dir.into();
         std::fs::create_dir_all(&output_dir).context("creating traces output dir")?;
@@ -106,7 +111,13 @@ impl Tracer {
             "trace event"
         );
         // Only fails if the writer task has exited (e.g. panicked).
-        let _ = self.tx.send(WriterMsg::Event(event));
+        if let Err(err) = self.tx.send(WriterMsg::Event(event)) {
+            tracing::error!(
+                run_id = %self.run_id,
+                error = ?err,
+                "tracer writer task has exited; dropping trace event"
+            );
+        }
     }
 
     /// Convenience: build and record an event for this run.
@@ -127,7 +138,11 @@ impl Tracer {
         self.run_id
     }
 
-    /// Wait until all queued events have been written and flushed to the OS.
+    /// Wait until all queued events have been written to the OS write buffer.
+    ///
+    /// This is a write-barrier: it guarantees that all events emitted before
+    /// this call have been processed by the writer task and handed to the OS.
+    /// It does **not** guarantee durability (no `fsync`/`sync_data` is issued).
     pub async fn flush(&self) -> Result<()> {
         let (ack_tx, ack_rx) = oneshot::channel();
         let _ = self.tx.send(WriterMsg::Flush(ack_tx));
@@ -182,14 +197,17 @@ async fn writer_task(
 }
 
 /// Initialise a `tracing-subscriber` for the process (JSON or pretty).
-pub fn init_tracing(json: bool) {
+///
+/// Returns an error if a global subscriber has already been set.
+pub fn init_tracing(json: bool) -> Result<()> {
     use tracing_subscriber::{fmt, EnvFilter};
 
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     if json {
-        fmt().json().with_env_filter(filter).init();
+        fmt().json().with_env_filter(filter).try_init()
     } else {
-        fmt().pretty().with_env_filter(filter).init();
+        fmt().pretty().with_env_filter(filter).try_init()
     }
+    .map_err(|e| anyhow::anyhow!(e))
 }
