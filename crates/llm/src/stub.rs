@@ -4,10 +4,9 @@
 //! It returns an error if the script is exhausted, which signals that the
 //! agent ran more steps than the test anticipated.
 
-use std::sync::Mutex;
-
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use tokio::sync::Mutex;
 
 use crate::{LlmClient, LlmResponse, Message};
 
@@ -28,8 +27,10 @@ impl StubClient {
 #[async_trait]
 impl LlmClient for StubClient {
     async fn complete(&self, _system: Option<&str>, _messages: &[Message]) -> Result<LlmResponse> {
-        self.script.lock().unwrap().pop().ok_or_else(|| {
-            anyhow!("StubClient script exhausted — agent ran more steps than expected")
-        })
+        self.script
+            .lock()
+            .await
+            .pop()
+            .ok_or_else(|| anyhow!("StubClient script exhausted — agent ran more steps than expected"))
     }
 }
