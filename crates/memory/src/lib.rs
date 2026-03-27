@@ -36,8 +36,7 @@ impl MemoryEntry {
 
 /// In-memory, session-scoped context store.
 ///
-/// Entries accumulate in insertion order. Use [`SessionMemory::compact`] to
-/// trim history when approaching context limits.
+/// Entries accumulate in insertion order.
 #[derive(Debug, Default, Clone)]
 pub struct SessionMemory {
     entries: Vec<MemoryEntry>,
@@ -82,41 +81,6 @@ impl SessionMemory {
         self.entries.clear();
     }
 
-    /// Compact: keep any leading System entries and the last `keep_last` entries,
-    /// replacing the middle with a summary marker.
-    ///
-    /// This is a simple sliding-window compaction; a richer implementation would
-    /// call an LLM to summarise the dropped section.
-    pub fn compact(&mut self, keep_last: usize) {
-        let system_head: Vec<MemoryEntry> = self
-            .entries
-            .iter()
-            .take_while(|e| e.role == Role::System)
-            .cloned()
-            .collect();
-
-        let rest: Vec<MemoryEntry> = self
-            .entries
-            .iter()
-            .skip(system_head.len())
-            .cloned()
-            .collect();
-
-        if rest.len() <= keep_last {
-            return;
-        }
-
-        let dropped = rest.len() - keep_last;
-        let kept_tail = rest[rest.len() - keep_last..].to_vec();
-        let summary = MemoryEntry::new(
-            Role::Assistant,
-            format!("[{dropped} earlier messages compacted]"),
-        );
-
-        self.entries = system_head;
-        self.entries.push(summary);
-        self.entries.extend(kept_tail);
-    }
 }
 
 #[cfg(test)]
@@ -155,33 +119,6 @@ mod tests {
         let mut mem = SessionMemory::new();
         mem.add(Role::User, "hello world this is a test message");
         assert!(mem.estimated_tokens() > 0);
-    }
-
-    #[test]
-    fn compact_keeps_system_and_tail() {
-        let mut mem = SessionMemory::new();
-        mem.add(Role::System, "you are a helpful agent");
-        for i in 0..10 {
-            mem.add(Role::User, format!("message {i}"));
-            mem.add(Role::Assistant, format!("reply {i}"));
-        }
-
-        mem.compact(4);
-
-        assert_eq!(mem.entries()[0].role, Role::System);
-        assert!(mem.entries().iter().any(|e| e.content.contains("compacted")));
-        let tail = &mem.entries()[mem.len() - 4..];
-        assert_eq!(tail.len(), 4);
-    }
-
-    #[test]
-    fn compact_noop_when_short() {
-        let mut mem = SessionMemory::new();
-        mem.add(Role::User, "a");
-        mem.add(Role::User, "b");
-        let original_len = mem.len();
-        mem.compact(10);
-        assert_eq!(mem.len(), original_len);
     }
 
     #[test]
