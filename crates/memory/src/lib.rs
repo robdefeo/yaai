@@ -71,11 +71,6 @@ impl SessionMemory {
         self.entries.is_empty()
     }
 
-    /// Estimated token count (rough: 1 token ≈ 4 chars).
-    pub fn estimated_tokens(&self) -> usize {
-        self.entries.iter().map(|e| e.content.len() / 4).sum()
-    }
-
     /// Remove all entries.
     pub fn clear(&mut self) {
         self.entries.clear();
@@ -112,13 +107,6 @@ mod tests {
     #[test]
     fn is_empty_on_new() {
         assert!(SessionMemory::new().is_empty());
-    }
-
-    #[test]
-    fn estimated_tokens_grows_with_content() {
-        let mut mem = SessionMemory::new();
-        mem.add(Role::User, "hello world this is a test message");
-        assert!(mem.estimated_tokens() > 0);
     }
 
     #[test]
