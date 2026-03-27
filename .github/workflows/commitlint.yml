@@ -20,4 +20,4 @@ jobs:
       - name: Lint PR title
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
-        run: echo "$PR_TITLE" | bunx commitlint
+        run: echo "$PR_TITLE" | bunx commitlint --config .config/commitlint.config.mjs
