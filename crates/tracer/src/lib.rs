@@ -146,7 +146,9 @@ impl Tracer {
     pub async fn flush(&self) -> Result<()> {
         let (ack_tx, ack_rx) = oneshot::channel();
         let _ = self.tx.send(WriterMsg::Flush(ack_tx));
-        ack_rx.await.context("tracer writer task exited before flush")
+        ack_rx
+            .await
+            .context("tracer writer task exited before flush")
     }
 
     /// Flush all pending events and shut down the writer task.
@@ -154,16 +156,11 @@ impl Tracer {
     /// Must be called at the end of a run to ensure all events reach disk.
     pub async fn close(self) -> Result<()> {
         drop(self.tx);
-        self.handle
-            .await
-            .context("tracer writer task panicked")?
+        self.handle.await.context("tracer writer task panicked")?
     }
 }
 
-async fn writer_task(
-    path: PathBuf,
-    mut rx: mpsc::UnboundedReceiver<WriterMsg>,
-) -> Result<()> {
+async fn writer_task(path: PathBuf, mut rx: mpsc::UnboundedReceiver<WriterMsg>) -> Result<()> {
     let mut file = tokio::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -174,8 +171,7 @@ async fn writer_task(
     while let Some(msg) = rx.recv().await {
         match msg {
             WriterMsg::Event(event) => {
-                let mut line = serde_json::to_string(&event)
-                    .context("serialising trace event")?;
+                let mut line = serde_json::to_string(&event).context("serialising trace event")?;
                 line.push('\n');
                 file.write_all(line.as_bytes())
                     .await
