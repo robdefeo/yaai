@@ -18,13 +18,21 @@ async fn records_events_in_order() {
     let dir: PathBuf = tmp.path().to_path_buf();
     let tracer = Tracer::new(run_id, &dir).unwrap();
 
-    tracer.emit("agent-a", 0, EventKind::Prompt, "hello").unwrap();
-    tracer.emit("agent-a", 1, EventKind::ToolCall, "search").unwrap();
-    tracer.emit("agent-a", 2, EventKind::FinalAnswer, "done").unwrap();
+    tracer
+        .emit("agent-a", 0, EventKind::Prompt, "hello")
+        .unwrap();
+    tracer
+        .emit("agent-a", 1, EventKind::ToolCall, "search")
+        .unwrap();
+    tracer
+        .emit("agent-a", 2, EventKind::FinalAnswer, "done")
+        .unwrap();
 
     tracer.close().await.unwrap();
 
-    let content = tokio::fs::read_to_string(dir.join(format!("{run_id}.ndjson"))).await.unwrap();
+    let content = tokio::fs::read_to_string(dir.join(format!("{run_id}.ndjson")))
+        .await
+        .unwrap();
     let events = parse_ndjson(&content);
     assert_eq!(events.len(), 3);
     assert_eq!(events[0]["kind"], "prompt");
@@ -40,10 +48,14 @@ async fn flush_writes_ndjson_file() {
     let dir: PathBuf = tmp.path().to_path_buf();
     let tracer = Tracer::new(run_id, &dir).unwrap();
 
-    tracer.emit("agent-a", 0, EventKind::FinalAnswer, "result").unwrap();
+    tracer
+        .emit("agent-a", 0, EventKind::FinalAnswer, "result")
+        .unwrap();
     tracer.flush().await.unwrap();
 
-    let content = tokio::fs::read_to_string(dir.join(format!("{run_id}.ndjson"))).await.unwrap();
+    let content = tokio::fs::read_to_string(dir.join(format!("{run_id}.ndjson")))
+        .await
+        .unwrap();
     let events = parse_ndjson(&content);
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["kind"], "final_answer");
@@ -60,16 +72,24 @@ async fn events_visible_before_close() {
     let dir: PathBuf = tmp.path().to_path_buf();
     let tracer = Tracer::new(run_id, &dir).unwrap();
 
-    tracer.emit("agent-a", 0, EventKind::Prompt, "step one").unwrap();
+    tracer
+        .emit("agent-a", 0, EventKind::Prompt, "step one")
+        .unwrap();
     tracer.flush().await.unwrap();
 
-    let content = tokio::fs::read_to_string(dir.join(format!("{run_id}.ndjson"))).await.unwrap();
+    let content = tokio::fs::read_to_string(dir.join(format!("{run_id}.ndjson")))
+        .await
+        .unwrap();
     assert_eq!(parse_ndjson(&content).len(), 1);
 
-    tracer.emit("agent-a", 1, EventKind::FinalAnswer, "step two").unwrap();
+    tracer
+        .emit("agent-a", 1, EventKind::FinalAnswer, "step two")
+        .unwrap();
     tracer.close().await.unwrap();
 
-    let content = tokio::fs::read_to_string(dir.join(format!("{run_id}.ndjson"))).await.unwrap();
+    let content = tokio::fs::read_to_string(dir.join(format!("{run_id}.ndjson")))
+        .await
+        .unwrap();
     assert_eq!(parse_ndjson(&content).len(), 2);
 }
 
@@ -120,7 +140,9 @@ async fn record_directly() {
     tracer.record(event);
     tracer.close().await.unwrap();
 
-    let content = tokio::fs::read_to_string(dir.join(format!("{run_id}.ndjson"))).await.unwrap();
+    let content = tokio::fs::read_to_string(dir.join(format!("{run_id}.ndjson")))
+        .await
+        .unwrap();
     let events = parse_ndjson(&content);
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["kind"], "tool_result");

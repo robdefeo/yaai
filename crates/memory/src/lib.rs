@@ -75,7 +75,6 @@ impl SessionMemory {
     pub fn clear(&mut self) {
         self.entries.clear();
     }
-
 }
 
 #[cfg(test)]
