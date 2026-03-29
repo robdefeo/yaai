@@ -1,6 +1,6 @@
 //! Anthropic Claude Messages API client.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
@@ -65,8 +65,13 @@ struct MessagesResponse {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ContentBlock {
-    Text { text: String },
-    ToolUse { name: String, input: serde_json::Value },
+    Text {
+        text: String,
+    },
+    ToolUse {
+        name: String,
+        input: serde_json::Value,
+    },
     #[serde(other)]
     Unknown,
 }

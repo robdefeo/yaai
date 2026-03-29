@@ -104,7 +104,10 @@ fn tool_call_equality() {
 async fn box_dyn_client_delegates() {
     let inner = StubClient::new(vec![LlmResponse::text("delegated")]);
     let boxed: Box<dyn LlmClient> = Box::new(inner);
-    let result = boxed.complete(None, &[Message::user("test")]).await.unwrap();
+    let result = boxed
+        .complete(None, &[Message::user("test")])
+        .await
+        .unwrap();
     assert_eq!(result.content.as_deref(), Some("delegated"));
 }
 
@@ -165,4 +168,3 @@ fn openai_client_new() {
     use yaai_llm::OpenAiClient;
     let _ = OpenAiClient::new("test-api-key", "gpt-4o");
 }
-

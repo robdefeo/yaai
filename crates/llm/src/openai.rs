@@ -1,6 +1,6 @@
 //! OpenAI chat completions client.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
@@ -109,10 +109,7 @@ impl LlmClient for OpenAiClient {
             bail!("OpenAI API error ({}): {}", status, body);
         }
 
-        let resp: ChatResponse = response
-            .json()
-            .await
-            .context("parsing OpenAI response")?;
+        let resp: ChatResponse = response.json().await.context("parsing OpenAI response")?;
 
         let msg = resp
             .choices

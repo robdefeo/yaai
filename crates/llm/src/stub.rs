@@ -27,10 +27,8 @@ impl StubClient {
 #[async_trait]
 impl LlmClient for StubClient {
     async fn complete(&self, _system: Option<&str>, _messages: &[Message]) -> Result<LlmResponse> {
-        self.script
-            .lock()
-            .await
-            .pop()
-            .ok_or_else(|| anyhow!("StubClient script exhausted — agent ran more steps than expected"))
+        self.script.lock().await.pop().ok_or_else(|| {
+            anyhow!("StubClient script exhausted — agent ran more steps than expected")
+        })
     }
 }
