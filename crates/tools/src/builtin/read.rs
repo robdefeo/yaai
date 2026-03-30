@@ -1,7 +1,7 @@
 use crate::{Tool, ToolError};
 use async_trait::async_trait;
 use serde_json::Value;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
 
 const DEFAULT_LIMIT: usize = 2000;
 const MAX_BYTES: usize = 512 * 1024; // 512 KB
@@ -135,45 +135,59 @@ impl Tool for ReadTool {
             });
         }
 
-        // Read full file as text
-        let contents =
-            tokio::fs::read_to_string(file_path)
-                .await
-                .map_err(|e| ToolError::ExecutionFailed {
-                    name: self.name().to_string(),
-                    reason: format!("cannot read '{}': {}", file_path, e),
-                })?;
+        // Seek back to the start and wrap in a buffered reader so we stream line-by-line.
+        // This keeps memory usage bounded by MAX_BYTES regardless of file size.
+        file.seek(std::io::SeekFrom::Start(0))
+            .await
+            .map_err(|e| ToolError::ExecutionFailed {
+                name: self.name().to_string(),
+                reason: format!("cannot seek '{}': {}", file_path, e),
+            })?;
+        let mut lines = BufReader::new(file).lines();
 
-        let all_lines: Vec<&str> = contents.lines().collect();
-        let total_lines = all_lines.len();
+        // offset is 1-indexed; convert to 0-indexed window bounds.
+        let start = offset - 1;
+        let end = start + limit;
 
-        // offset is 1-indexed; clamp to valid range
-        let start = (offset - 1).min(total_lines);
-        let end = (start + limit).min(total_lines);
-
+        let mut total_lines: usize = 0;
         let mut output = String::new();
-        let mut byte_count = 0usize;
-        let mut actual_end = start;
+        let mut byte_count: usize = 0;
+        let mut actual_end: usize = start;
+        let mut byte_cap_hit = false;
 
-        for (i, line) in all_lines[start..end].iter().enumerate() {
-            let line_num = start + i + 1; // 1-indexed
+        while let Some(line) = lines
+            .next_line()
+            .await
+            .map_err(|e| ToolError::ExecutionFailed {
+                name: self.name().to_string(),
+                reason: format!("cannot read '{}': {}", file_path, e),
+            })?
+        {
+            let line_num_0 = total_lines; // 0-indexed
+            total_lines += 1;
+
+            // Lines outside the window or after the byte cap are counted but not collected.
+            if line_num_0 < start || line_num_0 >= end || byte_cap_hit {
+                continue;
+            }
+
+            let line_num = line_num_0 + 1; // 1-indexed for display
             let entry = format!("{}: {}\n", line_num, line);
             byte_count += entry.len();
 
             if byte_count > MAX_BYTES {
-                break;
+                byte_cap_hit = true;
+                // If nothing has been written yet, include this line in full to guarantee
+                // the caller always makes forward progress through the file.
+                if actual_end == start {
+                    output = entry;
+                    actual_end = line_num_0 + 1;
+                }
+                continue;
             }
 
             output.push_str(&entry);
-            actual_end = start + i + 1;
-        }
-
-        // If nothing was written, the first line alone exceeds MAX_BYTES.
-        // Include it in full anyway to guarantee the caller always makes forward progress.
-        if actual_end == start && start < total_lines {
-            let line_num = start + 1;
-            output = format!("{}: {}\n", line_num, all_lines[start]);
-            actual_end = start + 1;
+            actual_end = line_num_0 + 1;
         }
 
         // Ensure from <= to: when offset is past EOF nothing is read (actual_end == start)
