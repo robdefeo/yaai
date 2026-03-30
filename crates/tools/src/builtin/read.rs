@@ -461,10 +461,16 @@ mod tests {
         assert_eq!(result["lines"]["total"], 3);
 
         let cont = result["continuation"].as_str().unwrap();
-        assert!(cont.contains("offset=2"), "continuation must point at line 2");
+        assert!(
+            cont.contains("offset=2"),
+            "continuation must point at line 2"
+        );
 
         let content = result["content"].as_str().unwrap();
-        assert!(!content.contains("2:"), "line 2 must not appear in this page");
+        assert!(
+            !content.contains("2:"),
+            "line 2 must not appear in this page"
+        );
 
         let payload = content.trim_start_matches("1: ");
         assert_eq!(payload.len(), big.len(), "line 1 must be returned in full");
