@@ -1,5 +1,5 @@
 use std::io::Write;
-use tempfile::NamedTempFile;
+use tempfile::{NamedTempFile, TempDir};
 use uuid::Uuid;
 use yaai_agent_loop::{AgentConfig, AgentRunner};
 use yaai_llm::{LlmResponse, StubClient};
@@ -15,8 +15,10 @@ fn cfg(max_steps: u32) -> AgentConfig {
     }
 }
 
-fn tracer() -> Tracer {
-    Tracer::new(Uuid::new_v4(), "/tmp/yaai-agent-test-traces").expect("tracer init failed")
+fn tracer() -> (TempDir, Tracer) {
+    let tmp = tempfile::tempdir().unwrap();
+    let tr = Tracer::new(Uuid::new_v4(), tmp.path()).expect("tracer init failed");
+    (tmp, tr)
 }
 
 fn temp_file_path() -> (NamedTempFile, String) {
@@ -31,7 +33,7 @@ async fn produces_final_answer_without_tools() {
     let llm = StubClient::new(vec![LlmResponse::text("The answer is 42.")]);
     let tools = ToolRegistry::new();
     let mut mem = SessionMemory::new();
-    let tr = tracer();
+    let (_tmp, tr) = tracer();
 
     let result = AgentRunner::new(&cfg(5), &llm, &tools, &tr, &mut mem)
         .run("What is the answer?")
@@ -52,7 +54,7 @@ async fn calls_tool_then_answers() {
     let mut tools = ToolRegistry::new();
     tools.register(ReadTool::new());
     let mut mem = SessionMemory::new();
-    let tr = tracer();
+    let (_tmp, tr) = tracer();
 
     let result = AgentRunner::new(&cfg(5), &llm, &tools, &tr, &mut mem)
         .run("Read the file")
@@ -74,7 +76,7 @@ async fn respects_max_steps() {
     let mut tools = ToolRegistry::new();
     tools.register(ReadTool::new());
     let mut mem = SessionMemory::new();
-    let tr = tracer();
+    let (_tmp, tr) = tracer();
 
     let err = AgentRunner::new(&cfg(3), &llm, &tools, &tr, &mut mem)
         .run("loop forever")
@@ -94,7 +96,7 @@ async fn trace_has_correct_event_sequence() {
     let mut tools = ToolRegistry::new();
     tools.register(ReadTool::new());
     let mut mem = SessionMemory::new();
-    let tr = tracer();
+    let (_tmp, tr) = tracer();
 
     // Tracer is write-only (streams to ndjson); verify the run completed with
     // the expected step count as a proxy for correct event sequencing.
@@ -118,7 +120,7 @@ async fn memory_accumulates_across_steps() {
     let mut tools = ToolRegistry::new();
     tools.register(ReadTool::new());
     let mut mem = SessionMemory::new();
-    let tr = tracer();
+    let (_tmp, tr) = tracer();
 
     AgentRunner::new(&cfg(5), &llm, &tools, &tr, &mut mem)
         .run("task")
@@ -141,7 +143,7 @@ async fn graceful_tool_error_continues_loop() {
     let mut tools = ToolRegistry::new();
     tools.register(ReadTool::new());
     let mut mem = SessionMemory::new();
-    let tr = tracer();
+    let (_tmp, tr) = tracer();
 
     // The tool error should be fed back as a ToolResult observation and the
     // loop should continue to the next LLM call rather than propagating the
@@ -164,7 +166,7 @@ async fn empty_llm_response_returns_error() {
     }]);
     let tools = ToolRegistry::new();
     let mut mem = SessionMemory::new();
-    let tr = tracer();
+    let (_tmp, tr) = tracer();
 
     let err = AgentRunner::new(&cfg(5), &llm, &tools, &tr, &mut mem)
         .run("task")
