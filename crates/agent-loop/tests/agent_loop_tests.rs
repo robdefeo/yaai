@@ -42,6 +42,7 @@ async fn produces_final_answer_without_tools() {
 
     assert_eq!(result.answer, "The answer is 42.");
     assert_eq!(result.steps_taken, 1);
+    tr.close().await.unwrap();
 }
 
 #[tokio::test]
@@ -63,6 +64,7 @@ async fn calls_tool_then_answers() {
 
     assert_eq!(result.answer, "The answer is 42.");
     assert_eq!(result.steps_taken, 2);
+    tr.close().await.unwrap();
 }
 
 #[tokio::test]
@@ -84,6 +86,7 @@ async fn respects_max_steps() {
         .unwrap_err();
 
     assert!(err.to_string().contains("max_steps"));
+    tr.close().await.unwrap();
 }
 
 #[tokio::test]
@@ -108,6 +111,7 @@ async fn trace_has_correct_event_sequence() {
     // 2 steps: one tool call + one final answer
     assert_eq!(result.steps_taken, 2);
     assert_eq!(result.answer, "Result is done.");
+    tr.close().await.unwrap();
 }
 
 #[tokio::test]
@@ -129,6 +133,7 @@ async fn memory_accumulates_across_steps() {
 
     // user task + tool result observation + final assistant = at least 3
     assert!(mem.len() >= 3);
+    tr.close().await.unwrap();
 }
 
 #[tokio::test]
@@ -156,6 +161,7 @@ async fn graceful_tool_error_continues_loop() {
     assert_eq!(result.answer, "Handled the error.");
     // 2 steps: tool attempt (error) + final answer
     assert_eq!(result.steps_taken, 2);
+    tr.close().await.unwrap();
 }
 
 #[tokio::test]
@@ -174,6 +180,7 @@ async fn empty_llm_response_returns_error() {
         .unwrap_err();
 
     assert!(err.to_string().contains("empty LLM response"));
+    tr.close().await.unwrap();
 }
 
 #[test]

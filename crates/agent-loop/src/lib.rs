@@ -61,6 +61,10 @@ impl<'a> AgentRunner<'a> {
     }
 
     /// Run the agent loop on the given task, returning the final answer.
+    ///
+    /// The caller is responsible for calling [`Tracer::close`] on the tracer
+    /// after this method returns (success or error) to shut down the background
+    /// writer task cleanly.
     pub async fn run(&mut self, task: impl Into<String>) -> Result<AgentResult> {
         let task = task.into();
         let run_id = self.tracer.run_id();
@@ -99,11 +103,19 @@ impl<'a> AgentRunner<'a> {
                 .await?;
 
             if response.content.is_none() && response.tool_call.is_none() {
-                bail!(
+                let msg = format!(
                     "agent '{}' received an empty LLM response at step {}",
                     self.config.id,
                     step
                 );
+                self.tracer.emit(
+                    &self.config.id,
+                    step,
+                    EventKind::Error,
+                    serde_json::json!({ "error": &msg }),
+                )?;
+                self.tracer.flush().await?;
+                bail!(msg);
             }
 
             if let Some(ref text) = response.content {
