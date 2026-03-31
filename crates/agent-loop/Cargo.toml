@@ -1,0 +1,19 @@
+[package]
+name = "yaai-agent-loop"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+yaai-llm = { path = "../llm" }
+yaai-memory = { path = "../memory" }
+yaai-tools = { path = "../tools" }
+yaai-tracer = { path = "../tracer" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
