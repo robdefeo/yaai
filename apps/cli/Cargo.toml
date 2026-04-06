@@ -1,0 +1,19 @@
+[package]
+name = "yaai"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "yaai"
+path = "src/main.rs"
+
+[dependencies]
+yaai-agent-loop = { path = "../../crates/agent-loop" }
+yaai-llm = { path = "../../crates/llm" }
+yaai-tools = { path = "../../crates/tools" }
+yaai-orchestrator = { path = "../../crates/orchestrator" }
+yaai-tracer = { path = "../../crates/tracer" }
+anyhow = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
