@@ -42,9 +42,9 @@ pub struct PromptArgs {
     #[arg(
         long,
         default_value = "traces",
-        help = "Directory where JSON trace files are written after each run. \
-                Each run produces a file named <run-id>.json containing the full \
-                step-by-step event log."
+        help = "Directory where trace files are written after each run. \
+                Each run produces a file named <run-id>.ndjson containing \
+                newline-delimited JSON (NDJSON) — one event object per line."
     )]
     pub traces_dir: String,
 }

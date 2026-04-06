@@ -11,6 +11,9 @@ pub fn parse_provider_model(s: &str) -> Result<(Provider, String)> {
     let (provider_str, model) = s
         .split_once('/')
         .ok_or_else(|| anyhow!("--model must be in format provider/model (e.g. openai/gpt-4o)"))?;
+    if model.trim().is_empty() {
+        bail!("--model must include a model name after the provider (e.g. openai/gpt-4o)");
+    }
     let provider = match provider_str {
         "openai" => Provider::OpenAi,
         "anthropic" => Provider::Anthropic,
@@ -74,6 +77,18 @@ mod tests {
     fn parse_unknown_provider_fails() {
         let err = parse_provider_model("bedrock/titan").unwrap_err();
         assert!(err.to_string().contains("unknown provider"));
+    }
+
+    #[test]
+    fn parse_empty_model_fails() {
+        let err = parse_provider_model("openai/").unwrap_err();
+        assert!(err.to_string().contains("model name"));
+    }
+
+    #[test]
+    fn parse_whitespace_model_fails() {
+        let err = parse_provider_model("openai/   ").unwrap_err();
+        assert!(err.to_string().contains("model name"));
     }
 
     #[test]

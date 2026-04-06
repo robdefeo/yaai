@@ -26,7 +26,7 @@ struct Cli {
 async fn main() -> Result<()> {
     // grcov-excl-start
     let cli = Cli::parse();
-    let _ = init_tracing(cli.json_logs);
+    init_tracing(cli.json_logs)?;
     commands::prompt::execute(cli.args).await
     // grcov-excl-stop
 }
