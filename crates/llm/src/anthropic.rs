@@ -14,13 +14,13 @@ const DEFAULT_MODEL: &str = "claude-sonnet-4-5";
 const DEFAULT_MAX_TOKENS: u32 = 4096;
 
 #[derive(Debug, Clone)]
-pub struct ClaudeClient {
+pub struct AnthropicClient {
     api_key: String,
     model: String,
     client: reqwest::Client,
 }
 
-impl ClaudeClient {
+impl AnthropicClient {
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
         Self::with_client(api_key, model, crate::default_http_client())
     }
@@ -80,7 +80,7 @@ enum ContentBlock {
 
 // grcov-excl-start
 #[async_trait]
-impl LlmClient for ClaudeClient {
+impl LlmClient for AnthropicClient {
     async fn complete(&self, system: Option<&str>, messages: &[Message]) -> Result<LlmResponse> {
         debug!(model = %self.model, messages = messages.len(), "calling Claude");
 
