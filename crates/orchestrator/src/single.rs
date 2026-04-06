@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use uuid::Uuid;
 use yaai_agent_loop::{AgentConfig, AgentResult, AgentRunner};
 use yaai_llm::LlmClient;
@@ -19,8 +19,16 @@ pub async fn run_single(
 
     let result = AgentRunner::new(config, llm, tools, &tracer, &mut memory)
         .run(task)
-        .await?;
+        .await;
 
-    tracer.close().await?;
-    Ok(result)
+    let close_result = tracer.close().await;
+
+    match (result, close_result) {
+        (Ok(result), Ok(())) => Ok(result),
+        (Err(run_err), Ok(())) => Err(run_err),
+        (Ok(_), Err(close_err)) => Err(close_err),
+        (Err(run_err), Err(close_err)) => {
+            Err(run_err).context(format!("failed to close tracer cleanly: {close_err}"))
+        }
+    }
 }
