@@ -3,9 +3,9 @@
 //! Defines the [`LlmClient`] trait and provides:
 //! - [`StubClient`]: scripted responses for deterministic testing
 //! - [`OpenAiClient`]: calls the OpenAI chat completions API
-//! - [`ClaudeClient`]: calls the Anthropic Messages API
+//! - [`AnthropicClient`]: calls the Anthropic Messages API
 
-pub mod claude;
+pub mod anthropic;
 pub mod openai;
 pub mod stub;
 
@@ -23,7 +23,7 @@ pub(crate) fn default_http_client() -> reqwest::Client {
         .expect("failed to build reqwest client")
 }
 
-pub use claude::ClaudeClient;
+pub use anthropic::AnthropicClient;
 pub use openai::OpenAiClient;
 pub use stub::StubClient;
 
