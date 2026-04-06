@@ -17,9 +17,15 @@ async fn single_agent_completes() {
     let tools = ToolRegistry::new();
     let dir = tempfile::tempdir().unwrap();
 
-    let result = run_single(&cfg("solo"), "do a task", &llm, &tools, dir.path().to_str().unwrap())
-        .await
-        .unwrap();
+    let result = run_single(
+        &cfg("solo"),
+        "do a task",
+        &llm,
+        &tools,
+        dir.path().to_str().unwrap(),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(result.answer, "final answer");
     assert_eq!(result.agent_id, "solo");
