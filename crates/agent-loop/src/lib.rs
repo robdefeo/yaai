@@ -105,8 +105,7 @@ impl<'a> AgentRunner<'a> {
             if response.content.is_none() && response.tool_call.is_none() {
                 let msg = format!(
                     "agent '{}' received an empty LLM response at step {}",
-                    self.config.id,
-                    step
+                    self.config.id, step
                 );
                 self.tracer.emit(
                     &self.config.id,
