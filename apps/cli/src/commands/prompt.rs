@@ -16,6 +16,8 @@ pub struct PromptArgs {
         short = 'p',
         long,
         value_name = "PROMPT",
+        display_order = 1,
+        help_heading = "Arguments",
         value_parser = |s: &str| -> Result<String, String> {
             if s.trim().is_empty() {
                 Err("prompt must not be empty".to_string())
@@ -32,7 +34,8 @@ pub struct PromptArgs {
         short = 'm',
         long,
         value_name = "PROVIDER/MODEL",
-        default_value = "openai/gpt-4o",
+        display_order = 2,
+        help_heading = "Arguments",
         help = "The model to use, specified as provider/model (e.g. openai/gpt-4o, \
                 anthropic/claude-3-5-sonnet-20241022). The corresponding API key must be \
                 set in the environment (OPENAI_API_KEY or ANTHROPIC_API_KEY)."
@@ -42,6 +45,8 @@ pub struct PromptArgs {
     #[arg(
         long,
         default_value = "traces",
+        display_order = 13,
+        help_heading = "Options",
         help = "Directory where trace files are written after each run. \
                 Each run produces a file named <run-id>.ndjson containing \
                 newline-delimited JSON (NDJSON) — one event object per line."
