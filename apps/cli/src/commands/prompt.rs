@@ -7,12 +7,22 @@ use yaai_tools::ToolRegistry;
 
 use super::llm::{build_llm_client, parse_provider_model};
 
+const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant.";
+const DEFAULT_MAX_STEPS: u32 = 10;
+
 #[derive(Args)]
 pub struct PromptArgs {
     #[arg(
         short = 'p',
         long,
         value_name = "PROMPT",
+        value_parser = |s: &str| -> Result<String, String> {
+            if s.trim().is_empty() {
+                Err("prompt must not be empty".to_string())
+            } else {
+                Ok(s.to_string())
+            }
+        },
         help = "The prompt to send to the agent. The agent will reason over this input \
                 and return a final answer, running up to a fixed number of steps."
     )]
@@ -22,6 +32,7 @@ pub struct PromptArgs {
         short = 'm',
         long,
         value_name = "PROVIDER/MODEL",
+        default_value = "openai/gpt-4o",
         help = "The model to use, specified as provider/model (e.g. openai/gpt-4o, \
                 anthropic/claude-3-5-sonnet-20241022). The corresponding API key must be \
                 set in the environment (OPENAI_API_KEY or ANTHROPIC_API_KEY)."
@@ -46,8 +57,8 @@ pub async fn execute(args: PromptArgs) -> Result<()> {
 
     let agent_config = AgentConfig {
         id: "prompt".to_string(),
-        system_prompt: "You are a helpful assistant.".to_string(),
-        max_steps: 10,
+        system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
+        max_steps: DEFAULT_MAX_STEPS,
     };
 
     let result = run_single(&agent_config, &args.prompt, &llm, &tools, &args.traces_dir).await?;
