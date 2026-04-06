@@ -82,7 +82,7 @@ enum ContentBlock {
 #[async_trait]
 impl LlmClient for AnthropicClient {
     async fn complete(&self, system: Option<&str>, messages: &[Message]) -> Result<LlmResponse> {
-        debug!(model = %self.model, messages = messages.len(), "calling Claude");
+        debug!(model = %self.model, messages = messages.len(), "calling Anthropic");
 
         let body = MessagesRequest {
             model: &self.model,

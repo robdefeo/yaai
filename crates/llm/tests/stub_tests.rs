@@ -151,14 +151,14 @@ fn tool_call_serde_round_trip() {
 }
 
 #[test]
-fn claude_client_new_empty_model_uses_default() {
+fn anthropic_client_new_empty_model_uses_default() {
     use yaai_llm::AnthropicClient;
     // Empty model string should fall back to the built-in default — just verify construction succeeds
     let _ = AnthropicClient::new("test-api-key", "");
 }
 
 #[test]
-fn claude_client_new_explicit_model() {
+fn anthropic_client_new_explicit_model() {
     use yaai_llm::AnthropicClient;
     let _ = AnthropicClient::new("test-api-key", "claude-3-opus");
 }
