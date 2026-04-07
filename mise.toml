@@ -1,5 +1,6 @@
 [tools]
 bun = "1.2.5"
+"cargo:cargo-watch" = "8.5.3"
 "cargo:grcov" = "0.10.7"
 just = "1.38.0"
 

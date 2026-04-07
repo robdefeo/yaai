@@ -1,0 +1,15 @@
+{
+  "name": "yaai",
+  "private": true,
+  "devDependencies": {
+    "@biomejs/biome": "1.9.4"
+  },
+  "commitlint": {
+    "extends": ["@commitlint/config-conventional"]
+  },
+  "scripts": {
+    "lint": "biome check .",
+    "fmt": "biome format --write .",
+    "test": "bun test --pass-with-no-tests"
+  }
+}
