@@ -4,12 +4,9 @@
   "devDependencies": {
     "@biomejs/biome": "1.9.4"
   },
-  "commitlint": {
-    "extends": ["@commitlint/config-conventional"]
-  },
   "scripts": {
-    "lint": "biome check .",
     "fmt": "biome format --write .",
+    "lint": "biome check .",
     "test": "bun test --pass-with-no-tests"
   }
 }

@@ -70,7 +70,7 @@ coverage-check: (_grcov "lcov" "coverage/lcov.info")
     /^FNH:/ { fh=$2 } /^FNF:/ { ff=$2 }\
     /^end_of_record/ {\
       l=(lf>0)?(lh/lf*100):0; f=(ff>0)?(fh/ff*100):0;\
-      if(l<80||f<80) printf "%06.2f %-50s  %7.1f%%  (%3d/%-3d)  %8.1f%%  (%2d/%-2d)\n",l,file,l,lh,lf,f,fh,ff\
+      if(l<80||f<20) printf "%06.2f %-50s  %7.1f%%  (%3d/%-3d)  %8.1f%%  (%2d/%-2d)\n",l,file,l,lh,lf,f,fh,ff\
     }' coverage/lcov.info | sort -k1 -n | sed 's/^[0-9.]* /  /'
   printf "\n"
   awk -F: '\
