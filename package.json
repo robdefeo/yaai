@@ -1,0 +1,12 @@
+{
+  "name": "yaai",
+  "private": true,
+  "devDependencies": {
+    "@biomejs/biome": "1.9.4"
+  },
+  "scripts": {
+    "fmt": "biome format --write .",
+    "lint": "biome check .",
+    "test": "bun test --pass-with-no-tests"
+  }
+}
