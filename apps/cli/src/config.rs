@@ -116,9 +116,14 @@ mod tests {
     }
 
     #[test]
-    fn missing_file_returns_default() {
-        // Simulate no config dir / non-existent file path via load() returning default.
-        let cfg = YaaiConfig::default();
+    fn load_returns_default_when_config_file_absent() {
+        let dir = tempdir().unwrap();
+        // Point HOME (and XDG_CONFIG_HOME) at an empty temp dir so no config file exists.
+        unsafe {
+            std::env::set_var("HOME", dir.path());
+            std::env::set_var("XDG_CONFIG_HOME", dir.path().join("config"));
+        }
+        let cfg = load().unwrap();
         assert!(cfg.model.is_none());
         assert!(cfg.traces_dir.is_none());
         assert!(cfg.json_logs.is_none());

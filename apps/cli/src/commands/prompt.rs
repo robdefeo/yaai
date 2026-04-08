@@ -9,6 +9,15 @@ use crate::config::YaaiConfig;
 
 use super::llm::{build_llm_client, parse_provider_model};
 
+fn expand_tilde(p: String) -> String {
+    if let Some(rest) = p.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest).to_string_lossy().into_owned();
+        }
+    }
+    p
+}
+
 const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant.";
 const DEFAULT_MAX_STEPS: u32 = 10;
 const DEFAULT_TRACES_DIR: &str = "traces";
@@ -42,7 +51,7 @@ pub struct PromptArgs {
         help = "The model to use, specified as provider/model (e.g. openai/gpt-4o, \
                 anthropic/claude-3-5-sonnet-20241022). The corresponding API key must be \
                 set in the environment (OPENAI_API_KEY or ANTHROPIC_API_KEY). \
-                Falls back to `model` in ~/.config/yaai/config.json if not set."
+                Falls back to `model` in $XDG_CONFIG_HOME/yaai/config.json if not set."
     )]
     pub model: Option<String>,
 
@@ -53,7 +62,7 @@ pub struct PromptArgs {
         help = "Directory where trace files are written after each run. \
                 Each run produces a file named <run-id>.ndjson containing \
                 newline-delimited JSON (NDJSON) — one event object per line. \
-                Falls back to `traces_dir` in ~/.config/yaai/config.json, then \"traces\"."
+                Falls back to `traces_dir` in $XDG_CONFIG_HOME/yaai/config.json, then \"traces\"."
     )]
     pub traces_dir: Option<String>,
 }
@@ -62,7 +71,9 @@ impl PromptArgs {
     /// Resolve final values by layering: CLI args > config file > hardcoded defaults.
     pub fn resolve(self, cfg: &YaaiConfig) -> Result<ResolvedPromptArgs> {
         let model = self.model.or_else(|| cfg.model.clone()).ok_or_else(|| {
-            anyhow::anyhow!("--model is required (or set `model` in ~/.config/yaai/config.json)")
+            anyhow::anyhow!(
+                "--model is required (or set `model` in $XDG_CONFIG_HOME/yaai/config.json)"
+            )
         })?;
 
         if model.trim().is_empty() {
@@ -73,6 +84,7 @@ impl PromptArgs {
             .traces_dir
             .or_else(|| cfg.traces_dir.clone())
             .unwrap_or_else(|| DEFAULT_TRACES_DIR.to_string());
+        let traces_dir = expand_tilde(traces_dir);
 
         Ok(ResolvedPromptArgs {
             prompt: self.prompt,
@@ -182,6 +194,15 @@ mod tests {
             .resolve(&cfg(None, None))
             .unwrap();
         assert_eq!(resolved.traces_dir, DEFAULT_TRACES_DIR);
+    }
+
+    #[test]
+    fn tilde_in_traces_dir_is_expanded() {
+        let resolved = args(Some("openai/gpt-4o"), Some("~/my/traces"))
+            .resolve(&cfg(None, None))
+            .unwrap();
+        assert!(!resolved.traces_dir.starts_with('~'));
+        assert!(resolved.traces_dir.ends_with("/my/traces"));
     }
 
     #[test]
