@@ -1,6 +1,7 @@
 //! yaai — POC Agent Harness CLI
 
 mod commands;
+mod config;
 
 use anyhow::Result;
 use clap::{ArgAction, Parser};
@@ -50,7 +51,8 @@ struct Cli {
         display_order = 12,
         help_heading = "Options",
         help = "Emit logs as structured JSON instead of pretty-printed text. \
-                Useful when piping output to a log aggregator or structured logging pipeline."
+                Useful when piping output to a log aggregator or structured logging pipeline. \
+                Falls back to `json_logs` in ~/.config/yaai/config.json."
     )]
     json_logs: bool,
 
@@ -62,7 +64,11 @@ struct Cli {
 async fn main() -> Result<()> {
     // grcov-excl-start
     let cli = Cli::parse();
-    init_tracing(cli.json_logs)?;
-    commands::prompt::execute(cli.args).await
+    let cfg = config::load()?;
+
+    let json_logs = cli.json_logs || cfg.json_logs.unwrap_or(false);
+    init_tracing(json_logs)?;
+
+    commands::prompt::execute(cli.args, &cfg).await
     // grcov-excl-stop
 }

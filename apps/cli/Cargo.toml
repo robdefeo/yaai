@@ -15,5 +15,11 @@ yaai-orchestrator = { path = "../../crates/orchestrator" }
 yaai-tracer = { path = "../../crates/tracer" }
 anyhow = { workspace = true }
 clap = { workspace = true }
+config = { workspace = true }
+dirs = { workspace = true }
+serde = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
