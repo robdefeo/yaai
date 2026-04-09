@@ -1,4 +1,6 @@
-//! User-level configuration loaded from `~/.config/yaai/config.json`.
+//! User-level configuration loaded from the OS config directory (e.g.
+//! `~/.config/yaai/config.json` on Linux, `~/Library/Application Support/yaai/config.json`
+//! on macOS). Use [`config_path`] to get the exact path at runtime.
 //!
 //! All fields are optional — the file need not exist, and any field can be
 //! omitted. CLI arguments always take precedence over file values.
@@ -7,7 +9,7 @@ use anyhow::{Context, Result};
 use config::{Config, File, FileFormat};
 use serde::Deserialize;
 
-/// Fields that can be set in `~/.config/yaai/config.json`.
+/// Fields that can be set in the yaai config file (see [`config_path`]).
 /// Every field is `Option<T>` so partial configs are valid.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -22,7 +24,25 @@ pub struct YaaiConfig {
     pub json_logs: Option<bool>,
 }
 
-/// Load `~/.config/yaai/config.json` if it exists; return `YaaiConfig::default()` otherwise.
+/// Returns the path where the config file is expected, if the OS config dir is available.
+pub fn config_path() -> Option<std::path::PathBuf> {
+    dirs::config_dir().map(|d| d.join("yaai").join("config.json"))
+}
+
+/// Returns [`config_path`] as a display string with the home directory replaced by `~`.
+pub fn config_path_display() -> String {
+    let Some(path) = config_path() else {
+        return "the yaai config file".to_string();
+    };
+    if let Some(home) = dirs::home_dir() {
+        if let Ok(rel) = path.strip_prefix(&home) {
+            return format!("~/{}", rel.display());
+        }
+    }
+    path.display().to_string()
+}
+
+/// Load the config file if it exists; return `YaaiConfig::default()` otherwise.
 pub fn load() -> Result<YaaiConfig> {
     let Some(config_dir) = dirs::config_dir() else {
         return Ok(YaaiConfig::default());

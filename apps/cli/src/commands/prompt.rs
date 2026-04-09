@@ -5,7 +5,7 @@ use yaai_agent_loop::AgentConfig;
 use yaai_orchestrator::run_single;
 use yaai_tools::ToolRegistry;
 
-use crate::config::YaaiConfig;
+use crate::config::{self, YaaiConfig};
 
 use super::llm::{build_llm_client, parse_provider_model};
 
@@ -50,8 +50,7 @@ pub struct PromptArgs {
         help_heading = "Arguments",
         help = "The model to use, specified as provider/model (e.g. openai/gpt-4o, \
                 anthropic/claude-3-5-sonnet-20241022). The corresponding API key must be \
-                set in the environment (OPENAI_API_KEY or ANTHROPIC_API_KEY). \
-                Falls back to `model` in $XDG_CONFIG_HOME/yaai/config.json if not set."
+                set in the environment (OPENAI_API_KEY or ANTHROPIC_API_KEY)."
     )]
     pub model: Option<String>,
 
@@ -61,8 +60,7 @@ pub struct PromptArgs {
         help_heading = "Options",
         help = "Directory where trace files are written after each run. \
                 Each run produces a file named <run-id>.ndjson containing \
-                newline-delimited JSON (NDJSON) — one event object per line. \
-                Falls back to `traces_dir` in $XDG_CONFIG_HOME/yaai/config.json, then \"traces\"."
+                newline-delimited JSON (NDJSON) — one event object per line."
     )]
     pub traces_dir: Option<String>,
 }
@@ -72,7 +70,8 @@ impl PromptArgs {
     pub fn resolve(self, cfg: &YaaiConfig) -> Result<ResolvedPromptArgs> {
         let model = self.model.or_else(|| cfg.model.clone()).ok_or_else(|| {
             anyhow::anyhow!(
-                "--model is required (or set `model` in $XDG_CONFIG_HOME/yaai/config.json)"
+                "--model is required (or set `model` in {})",
+                config::config_path_display()
             )
         })?;
 

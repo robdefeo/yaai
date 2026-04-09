@@ -4,7 +4,7 @@ mod commands;
 mod config;
 
 use anyhow::Result;
-use clap::{ArgAction, Parser};
+use clap::{ArgAction, CommandFactory, FromArgMatches, Parser};
 use commands::prompt::PromptArgs;
 use yaai_tracer::init_tracing;
 
@@ -51,8 +51,7 @@ struct Cli {
         display_order = 12,
         help_heading = "Options",
         help = "Emit logs as structured JSON instead of pretty-printed text. \
-                Useful when piping output to a log aggregator or structured logging pipeline. \
-                Falls back to `json_logs` in ~/.config/yaai/config.json."
+                Useful when piping output to a log aggregator or structured logging pipeline."
     )]
     json_logs: bool,
 
@@ -63,7 +62,34 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     // grcov-excl-start
-    let cli = Cli::parse();
+    let config_path = config::config_path_display();
+
+    let matches = Cli::command()
+        .mut_arg("model", |a| {
+            a.help(format!(
+                "The model to use, specified as provider/model (e.g. openai/gpt-4o, \
+                 anthropic/claude-3-5-sonnet-20241022). The corresponding API key must be \
+                 set in the environment (OPENAI_API_KEY or ANTHROPIC_API_KEY). \
+                 Falls back to `model` in {config_path} if not set."
+            ))
+        })
+        .mut_arg("traces_dir", |a| {
+            a.help(format!(
+                "Directory where trace files are written after each run. \
+                 Each run produces a file named <run-id>.ndjson containing \
+                 newline-delimited JSON (NDJSON) — one event object per line. \
+                 Falls back to `traces_dir` in {config_path}, then \"traces\"."
+            ))
+        })
+        .mut_arg("json_logs", |a| {
+            a.help(format!(
+                "Emit logs as structured JSON instead of pretty-printed text. \
+                 Useful when piping output to a log aggregator or structured logging pipeline. \
+                 Falls back to `json_logs` in {config_path}."
+            ))
+        })
+        .get_matches();
+    let cli = Cli::from_arg_matches(&matches)?;
     let cfg = config::load()?;
 
     let json_logs = cli.json_logs || cfg.json_logs.unwrap_or(false);
