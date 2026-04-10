@@ -1,5 +1,15 @@
 export default {
   extends: ["@commitlint/config-conventional"],
+  plugins: [
+    {
+      rules: {
+        "no-co-authored-by": (parsed) => {
+          const hasCoAuthorToken = /\bco-authored-by\b/i.test(parsed.raw ?? "");
+          return [!hasCoAuthorToken, "Co-authored-by is not allowed in commit messages"];
+        },
+      },
+    },
+  ],
   rules: {
     "type-enum": [
       2,
@@ -26,5 +36,6 @@ export default {
     "header-max-length": [2, "always", 100],
     "body-leading-blank": [1, "always"],
     "footer-leading-blank": [1, "always"],
+    "no-co-authored-by": [2, "always"],
   },
 };
