@@ -1,0 +1,15 @@
+workflow:
+  type: single
+  steps: []
+
+agents:
+  - id: coder
+    provider: anthropic
+    model: claude-haiku-4-5
+    tools: [shell_exec, calculator]
+    max_steps: 12
+    system_prompt: |
+      You are a coding assistant. You can run shell commands with shell_exec and
+      perform calculations with calculator. Write code, execute it, observe the
+      output, and iterate until the task is complete. When finished, provide
+      your final answer.

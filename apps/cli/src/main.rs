@@ -3,7 +3,7 @@
 mod commands;
 mod config;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{ArgAction, CommandFactory, FromArgMatches, Parser};
 use commands::prompt::PromptArgs;
 use yaai_tracer::init_tracing;
@@ -94,7 +94,7 @@ async fn main() -> Result<()> {
 
     let json_logs = cli.json_logs || cfg.json_logs.unwrap_or(false);
     let log_dir = dirs::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .context("cannot determine data directory")?
         .join("yaai")
         .join("logs");
     let _log_guard = init_tracing(json_logs, &log_dir)?;

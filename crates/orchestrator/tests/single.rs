@@ -37,9 +37,15 @@ async fn single_agent_closes_tracer_on_error() {
     let tools = ToolRegistry::new();
     let dir = tempfile::tempdir().unwrap();
 
-    let err = run_single(&cfg("solo"), "do a task", &llm, &tools, dir.path().to_str().unwrap())
-        .await
-        .unwrap_err();
+    let err = run_single(
+        &cfg("solo"),
+        "do a task",
+        &llm,
+        &tools,
+        dir.path().to_str().unwrap(),
+    )
+    .await
+    .unwrap_err();
 
     assert!(
         err.to_string().contains("StubClient script exhausted"),
@@ -52,5 +58,8 @@ async fn single_agent_closes_tracer_on_error() {
         .collect::<Vec<_>>();
 
     assert_eq!(trace_files.len(), 1);
-    assert_eq!(trace_files[0].extension().and_then(|ext| ext.to_str()), Some("ndjson"));
+    assert_eq!(
+        trace_files[0].extension().and_then(|ext| ext.to_str()),
+        Some("ndjson")
+    );
 }
