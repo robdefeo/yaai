@@ -50,8 +50,8 @@ struct Cli {
         global = true,
         display_order = 12,
         help_heading = "Options",
-        help = "Emit logs as structured JSON instead of pretty-printed text. \
-                Useful when piping output to a log aggregator or structured logging pipeline."
+        help = "Write logs as structured JSON instead of human-readable text. \
+                Useful when feeding the log file into a log aggregator or structured logging pipeline."
     )]
     json_logs: bool,
 
@@ -83,8 +83,8 @@ async fn main() -> Result<()> {
         })
         .mut_arg("json_logs", |a| {
             a.help(format!(
-                "Emit logs as structured JSON instead of pretty-printed text. \
-                 Useful when piping output to a log aggregator or structured logging pipeline. \
+                "Write logs as structured JSON instead of human-readable text. \
+                 Useful when feeding the log file into a log aggregator or structured logging pipeline. \
                  Falls back to `json_logs` in {config_path}."
             ))
         })
@@ -93,7 +93,11 @@ async fn main() -> Result<()> {
     let cfg = config::load()?;
 
     let json_logs = cli.json_logs || cfg.json_logs.unwrap_or(false);
-    init_tracing(json_logs)?;
+    let log_dir = dirs::data_local_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("yaai")
+        .join("logs");
+    let _log_guard = init_tracing(json_logs, &log_dir)?;
 
     commands::prompt::execute(cli.args, &cfg).await
     // grcov-excl-stop

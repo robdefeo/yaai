@@ -192,18 +192,48 @@ async fn writer_task(path: PathBuf, mut rx: mpsc::UnboundedReceiver<WriterMsg>) 
     Ok(())
 }
 
-/// Initialise a `tracing-subscriber` for the process (JSON or pretty).
+/// Initialise a `tracing-subscriber` for the process, writing logs to rolling daily files
+/// under `log_dir`. Files are named `yaai.YYYY-MM-DD.log` and the seven most recent are kept.
 ///
-/// Returns an error if a global subscriber has already been set.
-pub fn init_tracing(json: bool) -> Result<()> {
+/// Returns a [`WorkerGuard`] that **must be held** for the lifetime of the process — dropping
+/// it flushes and shuts down the background log-writer thread.
+///
+/// Returns an error if a global subscriber has already been set or if the log directory cannot
+/// be created.
+pub fn init_tracing(
+    json: bool,
+    log_dir: &std::path::Path,
+) -> Result<tracing_appender::non_blocking::WorkerGuard> {
+    use tracing_appender::rolling::{RollingFileAppender, Rotation};
     use tracing_subscriber::{fmt, EnvFilter};
 
+    std::fs::create_dir_all(log_dir)
+        .with_context(|| format!("creating log directory {}", log_dir.display()))?;
+
+    let appender = RollingFileAppender::builder()
+        .rotation(Rotation::DAILY)
+        .filename_prefix("yaai")
+        .filename_suffix("log")
+        .max_log_files(7)
+        .build(log_dir)
+        .with_context(|| format!("initialising log appender in {}", log_dir.display()))?;
+
+    let (non_blocking, guard) = tracing_appender::non_blocking(appender);
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     if json {
-        fmt().json().with_env_filter(filter).try_init()
+        fmt()
+            .json()
+            .with_env_filter(filter)
+            .with_writer(non_blocking)
+            .try_init()
     } else {
-        fmt().pretty().with_env_filter(filter).try_init()
+        fmt()
+            .with_env_filter(filter)
+            .with_writer(non_blocking)
+            .try_init()
     }
-    .map_err(|e| anyhow::anyhow!(e))
+    .map_err(|e| anyhow::anyhow!(e))?;
+
+    Ok(guard)
 }
