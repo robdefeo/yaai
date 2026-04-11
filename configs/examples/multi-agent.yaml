@@ -1,0 +1,31 @@
+workflow:
+  type: sequential
+  steps: [planner, executor, reviewer]
+
+agents:
+  - id: planner
+    provider: openai
+    model: gpt-4o
+    tools: []
+    max_steps: 5
+    system_prompt: |
+      You are a planning agent. Break the given task into a clear, ordered,
+      step-by-step plan. Output your plan as your final answer.
+
+  - id: executor
+    provider: openai
+    model: gpt-4o
+    tools: [calculator, shell_exec]
+    max_steps: 10
+    system_prompt: |
+      You are an execution agent. You will receive a plan. Execute each step
+      using the available tools. Report your results as your final answer.
+
+  - id: reviewer
+    provider: openai
+    model: gpt-4o
+    tools: []
+    max_steps: 5
+    system_prompt: |
+      You are a reviewing agent. Evaluate the execution results for correctness
+      and completeness. Provide a concise final review summary.
