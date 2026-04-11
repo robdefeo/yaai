@@ -3,7 +3,7 @@
 mod commands;
 mod config;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{ArgAction, CommandFactory, FromArgMatches, Parser};
 use commands::prompt::PromptArgs;
 use yaai_tracer::init_tracing;
@@ -84,7 +84,8 @@ async fn main() -> Result<()> {
         .mut_arg("json_logs", |a| {
             a.help(format!(
                 "Write logs as structured JSON instead of human-readable text. \
-                 Useful when feeding the log file into a log aggregator or structured logging pipeline. \
+                 Logs are written to <data_dir>/yaai/logs/yaai.YYYY-MM-DD.log \
+                 (e.g. ~/Library/Application Support/yaai/logs/ on macOS). \
                  Falls back to `json_logs` in {config_path}."
             ))
         })
@@ -94,10 +95,10 @@ async fn main() -> Result<()> {
 
     let json_logs = cli.json_logs || cfg.json_logs.unwrap_or(false);
     let log_dir = dirs::data_local_dir()
-        .context("cannot determine data directory")?
+        .unwrap_or_else(std::env::temp_dir)
         .join("yaai")
         .join("logs");
-    let _log_guard = init_tracing(json_logs, &log_dir)?;
+    let _log_guard = init_tracing(json_logs, &log_dir);
 
     commands::prompt::execute(cli.args, &cfg).await
     // grcov-excl-stop

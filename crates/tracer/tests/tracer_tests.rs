@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use uuid::Uuid;
-use yaai_tracer::{EventKind, TraceEvent, Tracer};
+use yaai_tracer::{init_tracing, EventKind, LogGuard, TraceEvent, Tracer};
 
 fn parse_ndjson(content: &str) -> Vec<serde_json::Value> {
     content
@@ -146,4 +146,36 @@ async fn record_directly() {
     let events = parse_ndjson(&content);
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["kind"], "tool_result");
+}
+
+#[test]
+fn tracer_new_fails_on_uncreatable_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("file.txt");
+    std::fs::write(&file, "").unwrap();
+    // A file cannot be used as a directory — create_dir_all should fail.
+    let bad_dir = file.join("subdir");
+    let result = Tracer::new(Uuid::new_v4(), &bad_dir);
+    assert!(result.is_err());
+}
+
+#[test]
+fn init_tracing_falls_back_to_noop_on_bad_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("file.txt");
+    std::fs::write(&file, "").unwrap();
+    // Appender will fail because `file.txt` is a file, not a directory.
+    let bad_dir = file.join("logs");
+    let guard = init_tracing(false, &bad_dir);
+    assert!(matches!(guard, LogGuard::Noop));
+}
+
+#[test]
+fn init_tracing_json_falls_back_to_noop_on_bad_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("file2.txt");
+    std::fs::write(&file, "").unwrap();
+    let bad_dir = file.join("logs");
+    let guard = init_tracing(true, &bad_dir);
+    assert!(matches!(guard, LogGuard::Noop));
 }

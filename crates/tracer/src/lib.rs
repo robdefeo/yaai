@@ -112,11 +112,11 @@ impl Tracer {
         );
         // Only fails if the writer task has exited (e.g. panicked).
         if let Err(err) = self.tx.send(WriterMsg::Event(event)) {
-            tracing::error!(
-                run_id = %self.run_id,
-                error = ?err,
-                "tracer writer task has exited; dropping trace event"
-            );
+            tracing::error!( // grcov-excl-line
+                run_id = %self.run_id, // grcov-excl-line
+                error = ?err, // grcov-excl-line
+                "tracer writer task has exited; dropping trace event" // grcov-excl-line
+            ); // grcov-excl-line
         }
     }
 
@@ -192,48 +192,72 @@ async fn writer_task(path: PathBuf, mut rx: mpsc::UnboundedReceiver<WriterMsg>) 
     Ok(())
 }
 
+/// Holds the active log writer for the lifetime of the process.
+///
+/// Returned by [`init_tracing`] and must be kept alive until the process exits. When dropped,
+/// the background log-writer thread is flushed and shut down.
+pub enum LogGuard {
+    /// File logging is active; dropping this flushes the writer thread.
+    File(tracing_appender::non_blocking::WorkerGuard),
+    /// File logging could not be initialised; events are discarded.
+    Noop,
+}
+
 /// Initialise a `tracing-subscriber` for the process, writing logs to rolling daily files
 /// under `log_dir`. Files are named `yaai.YYYY-MM-DD.log` and the seven most recent are kept.
 ///
-/// Returns a [`WorkerGuard`] that **must be held** for the lifetime of the process — dropping
-/// it flushes and shuts down the background log-writer thread.
+/// File logging is **best-effort**: if the log directory cannot be created or the appender
+/// cannot be initialised, a no-op subscriber is installed instead and the function still
+/// returns successfully. This ensures a logging failure never prevents the CLI from running.
 ///
-/// Returns an error if a global subscriber has already been set or if the log directory cannot
-/// be created.
-pub fn init_tracing(
-    json: bool,
-    log_dir: &std::path::Path,
-) -> Result<tracing_appender::non_blocking::WorkerGuard> {
-    use tracing_appender::rolling::{RollingFileAppender, Rotation};
+/// The returned [`LogGuard`] **must be held** for the lifetime of the process.
+pub fn init_tracing(json: bool, log_dir: &std::path::Path) -> LogGuard {
     use tracing_subscriber::{fmt, EnvFilter};
+
+    let filter = || EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+    match try_file_appender(log_dir) {
+        Ok(appender) => {
+            let (non_blocking, guard) = tracing_appender::non_blocking(appender);
+            let result = if json {
+                fmt()
+                    .json()
+                    .with_env_filter(filter())
+                    .with_writer(non_blocking)
+                    .try_init()
+            } else {
+                fmt()
+                    .with_env_filter(filter())
+                    .with_writer(non_blocking)
+                    .try_init()
+            };
+            if result.is_ok() {
+                return LogGuard::File(guard);
+            }
+            // Subscriber already set (e.g. in tests); guard is dropped, no file logging.
+        }
+        Err(_) => {
+            // Appender failed; install a sink subscriber so events are silently discarded.
+            let _ = fmt().with_writer(std::io::sink).try_init();
+        }
+    }
+
+    LogGuard::Noop
+}
+
+fn try_file_appender(
+    log_dir: &std::path::Path,
+) -> Result<tracing_appender::rolling::RollingFileAppender> {
+    use tracing_appender::rolling::{RollingFileAppender, Rotation};
 
     std::fs::create_dir_all(log_dir)
         .with_context(|| format!("creating log directory {}", log_dir.display()))?;
 
-    let appender = RollingFileAppender::builder()
+    RollingFileAppender::builder()
         .rotation(Rotation::DAILY)
         .filename_prefix("yaai")
         .filename_suffix("log")
         .max_log_files(7)
         .build(log_dir)
-        .with_context(|| format!("initialising log appender in {}", log_dir.display()))?;
-
-    let (non_blocking, guard) = tracing_appender::non_blocking(appender);
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-
-    if json {
-        fmt()
-            .json()
-            .with_env_filter(filter)
-            .with_writer(non_blocking)
-            .try_init()
-    } else {
-        fmt()
-            .with_env_filter(filter)
-            .with_writer(non_blocking)
-            .try_init()
-    }
-    .map_err(|e| anyhow::anyhow!(e))?;
-
-    Ok(guard)
+        .with_context(|| format!("initialising log appender in {}", log_dir.display()))
 }
