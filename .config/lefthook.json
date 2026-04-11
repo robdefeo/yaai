@@ -1,0 +1,16 @@
+{
+  "commit-msg": {
+    "commands": {
+      "commitlint": {
+        "run": "bunx commitlint --config .config/commitlint.config.mjs --edit {1}"
+      }
+    }
+  },
+  "pre-commit": {
+    "commands": {
+      "lint": {
+        "run": "just lint"
+      }
+    }
+  }
+}

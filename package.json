@@ -2,9 +2,13 @@
   "name": "yaai",
   "private": true,
   "devDependencies": {
-    "@biomejs/biome": "1.9.4"
+    "@biomejs/biome": "1.9.4",
+    "@commitlint/cli": "^20.5.0",
+    "@commitlint/config-conventional": "^20.5.0",
+    "lefthook": "^2.1.5"
   },
   "scripts": {
+    "prepare": "[ -d .git ] && lefthook install || true",
     "fmt": "biome format --write .",
     "lint": "biome check .",
     "test": "bun test --pass-with-no-tests"
