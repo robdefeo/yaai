@@ -3,9 +3,10 @@ export default {
   plugins: [
     {
       rules: {
-        "no-co-authored-by": (parsed) => {
+        "no-co-authored-by": (parsed, when) => {
           const hasCoAuthorToken = /\bco-authored-by\b/i.test(parsed.raw ?? "");
-          return [!hasCoAuthorToken, "Co-authored-by is not allowed in commit messages"];
+          const valid = when === "never" ? hasCoAuthorToken : !hasCoAuthorToken;
+          return [valid, "Co-authored-by is not allowed in commit messages"];
         },
       },
     },
