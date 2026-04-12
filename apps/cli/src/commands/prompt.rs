@@ -1,13 +1,10 @@
 use anyhow::{bail, Result};
 use clap::Args;
 use tracing::info;
-use yaai_agent_loop::AgentConfig;
-use yaai_orchestrator::run_single;
-use yaai_tools::ToolRegistry;
 
 use crate::config::{self, YaaiConfig};
 
-use super::llm::{build_llm_client, parse_provider_model};
+use super::runner::{run_prompt, ResolvedRunArgs};
 
 fn expand_tilde(p: String) -> String {
     if let Some(rest) = p.strip_prefix("~/") {
@@ -18,11 +15,9 @@ fn expand_tilde(p: String) -> String {
     p
 }
 
-const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant.";
-const DEFAULT_MAX_STEPS: u32 = 10;
 const DEFAULT_TRACES_DIR: &str = "traces";
 
-#[derive(Args)]
+#[derive(Args, Debug, Clone)]
 pub struct PromptArgs {
     #[arg(
         short = 'p',
@@ -30,17 +25,9 @@ pub struct PromptArgs {
         value_name = "PROMPT",
         display_order = 1,
         help_heading = "Arguments",
-        value_parser = |s: &str| -> Result<String, String> {
-            if s.trim().is_empty() {
-                Err("prompt must not be empty".to_string())
-            } else {
-                Ok(s.to_string())
-            }
-        },
-        help = "The prompt to send to the agent. The agent will reason over this input \
-                and return a final answer, running up to a fixed number of steps."
+        help = "Optional prompt to run non-interactively. When omitted, `yaai` starts the TUI."
     )]
-    pub prompt: String,
+    pub prompt: Option<String>,
 
     #[arg(
         short = 'm',
@@ -67,13 +54,17 @@ pub struct PromptArgs {
 
 impl PromptArgs {
     /// Resolve final values by layering: CLI args > config file > hardcoded defaults.
-    pub fn resolve(self, cfg: &YaaiConfig) -> Result<ResolvedPromptArgs> {
-        let model = self.model.or_else(|| cfg.model.clone()).ok_or_else(|| {
-            anyhow::anyhow!(
-                "--model is required (or set `model` in {})",
-                config::config_path_display()
-            )
-        })?;
+    pub fn resolve_run_args(&self, cfg: &YaaiConfig) -> Result<ResolvedRunArgs> {
+        let model = self
+            .model
+            .clone()
+            .or_else(|| cfg.model.clone())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--model is required (or set `model` in {})",
+                    config::config_path_display()
+                )
+            })?;
 
         if model.trim().is_empty() {
             bail!("model must not be empty");
@@ -81,46 +72,30 @@ impl PromptArgs {
 
         let traces_dir = self
             .traces_dir
+            .clone()
             .or_else(|| cfg.traces_dir.clone())
             .unwrap_or_else(|| DEFAULT_TRACES_DIR.to_string());
         let traces_dir = expand_tilde(traces_dir);
 
-        Ok(ResolvedPromptArgs {
-            prompt: self.prompt,
-            model,
-            traces_dir,
-        })
+        Ok(ResolvedRunArgs { model, traces_dir })
+    }
+
+    pub fn prompt_text(&self) -> Result<Option<String>> {
+        match self.prompt.as_deref() {
+            Some(prompt) if prompt.trim().is_empty() => bail!("prompt must not be empty"),
+            Some(prompt) => Ok(Some(prompt.to_string())),
+            None => Ok(None),
+        }
     }
 }
 
-#[derive(Debug)]
-pub struct ResolvedPromptArgs {
-    pub prompt: String,
-    pub model: String,
-    pub traces_dir: String,
-}
-
 // grcov-excl-start
-pub async fn execute(args: PromptArgs, cfg: &YaaiConfig) -> Result<()> {
-    let resolved = args.resolve(cfg)?;
-    let (provider, model) = parse_provider_model(&resolved.model)?;
-    let llm = build_llm_client(&provider, &model)?;
-    let tools = ToolRegistry::new();
-
-    let agent_config = AgentConfig {
-        id: "prompt".to_string(),
-        system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
-        max_steps: DEFAULT_MAX_STEPS,
-    };
-
-    let result = run_single(
-        &agent_config,
-        &resolved.prompt,
-        &llm,
-        &tools,
-        &resolved.traces_dir,
-    )
-    .await?;
+pub async fn execute_non_interactive(args: &PromptArgs, cfg: &YaaiConfig) -> Result<()> {
+    let prompt = args
+        .prompt_text()?
+        .ok_or_else(|| anyhow::anyhow!("prompt is required for non-interactive execution"))?;
+    let resolved = args.resolve_run_args(cfg)?;
+    let result = run_prompt(&prompt, &resolved).await?;
 
     info!(steps = result.steps_taken, "run complete");
     println!("{}", result.answer);
@@ -133,9 +108,9 @@ pub async fn execute(args: PromptArgs, cfg: &YaaiConfig) -> Result<()> {
 mod tests {
     use super::*;
 
-    fn args(model: Option<&str>, traces_dir: Option<&str>) -> PromptArgs {
+    fn args(prompt: Option<&str>, model: Option<&str>, traces_dir: Option<&str>) -> PromptArgs {
         PromptArgs {
-            prompt: "hello".to_string(),
+            prompt: prompt.map(str::to_string),
             model: model.map(str::to_string),
             traces_dir: traces_dir.map(str::to_string),
         }
@@ -151,64 +126,94 @@ mod tests {
 
     #[test]
     fn cli_model_takes_precedence_over_config() {
-        let resolved = args(Some("openai/gpt-4o"), None)
-            .resolve(&cfg(Some("anthropic/claude-3-5-sonnet-20241022"), None))
+        let resolved = args(Some("hello"), Some("openai/gpt-4o"), None)
+            .resolve_run_args(&cfg(Some("anthropic/claude-3-5-sonnet-20241022"), None))
             .unwrap();
         assert_eq!(resolved.model, "openai/gpt-4o");
     }
 
     #[test]
-    fn config_model_used_when_cli_model_absent() {
-        let resolved = args(None, None)
-            .resolve(&cfg(Some("anthropic/claude-3-5-sonnet-20241022"), None))
+    fn config_model_used_when_cli_absent() {
+        let resolved = args(Some("hello"), None, None)
+            .resolve_run_args(&cfg(Some("anthropic/claude-3-5-sonnet-20241022"), None))
             .unwrap();
         assert_eq!(resolved.model, "anthropic/claude-3-5-sonnet-20241022");
     }
 
     #[test]
     fn missing_model_from_both_is_error() {
-        let err = args(None, None).resolve(&cfg(None, None)).unwrap_err();
+        let err = args(Some("hello"), None, None)
+            .resolve_run_args(&cfg(None, None))
+            .unwrap_err();
         assert!(err.to_string().contains("--model is required"));
     }
 
     #[test]
     fn cli_traces_dir_takes_precedence_over_config() {
-        let resolved = args(Some("openai/gpt-4o"), Some("/cli/traces"))
-            .resolve(&cfg(None, Some("/cfg/traces")))
+        let resolved = args(Some("hello"), Some("openai/gpt-4o"), Some("/cli/traces"))
+            .resolve_run_args(&cfg(None, Some("/cfg/traces")))
             .unwrap();
         assert_eq!(resolved.traces_dir, "/cli/traces");
     }
 
     #[test]
     fn config_traces_dir_used_when_cli_absent() {
-        let resolved = args(Some("openai/gpt-4o"), None)
-            .resolve(&cfg(None, Some("/cfg/traces")))
+        let resolved = args(Some("hello"), Some("openai/gpt-4o"), None)
+            .resolve_run_args(&cfg(None, Some("/cfg/traces")))
             .unwrap();
         assert_eq!(resolved.traces_dir, "/cfg/traces");
     }
 
     #[test]
     fn default_traces_dir_when_both_absent() {
-        let resolved = args(Some("openai/gpt-4o"), None)
-            .resolve(&cfg(None, None))
+        let resolved = args(Some("hello"), Some("openai/gpt-4o"), None)
+            .resolve_run_args(&cfg(None, None))
             .unwrap();
         assert_eq!(resolved.traces_dir, DEFAULT_TRACES_DIR);
     }
 
     #[test]
     fn tilde_in_traces_dir_is_expanded() {
-        let resolved = args(Some("openai/gpt-4o"), Some("~/my/traces"))
-            .resolve(&cfg(None, None))
+        let resolved = args(Some("hello"), Some("openai/gpt-4o"), Some("~/my/traces"))
+            .resolve_run_args(&cfg(None, None))
             .unwrap();
         assert!(!resolved.traces_dir.starts_with('~'));
         assert!(resolved.traces_dir.ends_with("/my/traces"));
     }
 
     #[test]
-    fn prompt_is_passed_through() {
-        let resolved = args(Some("openai/gpt-4o"), None)
-            .resolve(&cfg(None, None))
-            .unwrap();
-        assert_eq!(resolved.prompt, "hello");
+    fn prompt_is_optional_for_tui_dispatch() {
+        assert_eq!(
+            args(None, Some("openai/gpt-4o"), None)
+                .prompt_text()
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn prompt_is_passed_through_for_non_interactive_mode() {
+        assert_eq!(
+            args(Some("hello"), Some("openai/gpt-4o"), None)
+                .prompt_text()
+                .unwrap(),
+            Some("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn empty_prompt_is_rejected() {
+        let err = args(Some("   "), Some("openai/gpt-4o"), None)
+            .prompt_text()
+            .unwrap_err();
+        assert!(err.to_string().contains("prompt must not be empty"));
+    }
+
+    #[test]
+    fn whitespace_only_model_is_error() {
+        let err = args(Some("hello"), Some("   "), None)
+            .resolve_run_args(&cfg(None, None))
+            .unwrap_err();
+        assert!(err.to_string().contains("must not be empty"));
     }
 }

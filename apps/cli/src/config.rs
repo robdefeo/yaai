@@ -148,4 +148,17 @@ mod tests {
         assert!(cfg.traces_dir.is_none());
         assert!(cfg.json_logs.is_none());
     }
+
+    #[test]
+    fn config_path_ends_with_yaai_config_json() {
+        if let Some(path) = config_path() {
+            assert!(path.ends_with("yaai/config.json"));
+        }
+    }
+
+    #[test]
+    fn config_path_display_contains_yaai() {
+        let display = config_path_display();
+        assert!(display.contains("yaai") || display == "the yaai config file");
+    }
 }

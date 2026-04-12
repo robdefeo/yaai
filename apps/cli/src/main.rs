@@ -100,6 +100,27 @@ async fn main() -> Result<()> {
         .join("logs");
     let _log_guard = init_tracing(json_logs, &log_dir);
 
-    commands::prompt::execute(cli.args, &cfg).await
+    if cli.args.prompt_text()?.is_some() {
+        commands::prompt::execute_non_interactive(&cli.args, &cfg).await
+    } else {
+        commands::tui::execute(&cli.args, &cfg).await
+    }
     // grcov-excl-stop
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_defaults_to_tui_when_prompt_missing() {
+        let cli = Cli::try_parse_from(["yaai", "--model", "openai/gpt-4o"]).unwrap();
+        assert_eq!(cli.args.prompt_text().unwrap(), None);
+    }
+
+    #[test]
+    fn cli_keeps_non_interactive_prompt_mode_when_prompt_present() {
+        let cli = Cli::try_parse_from(["yaai", "-p", "hello", "--model", "openai/gpt-4o"]).unwrap();
+        assert_eq!(cli.args.prompt_text().unwrap(), Some("hello".to_string()));
+    }
 }

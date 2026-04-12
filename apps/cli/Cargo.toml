@@ -16,10 +16,17 @@ yaai-tracer = { path = "../../crates/tracer" }
 anyhow = { workspace = true }
 clap = { workspace = true }
 config = { workspace = true }
+crossterm = { workspace = true }
 dirs = { workspace = true }
+ratatui = { workspace = true }
 serde = { workspace = true }
+textwrap = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
+tui-textarea = { workspace = true }
+unicode-width = { workspace = true }
 
 [dev-dependencies]
+portable-pty = { workspace = true }
 tempfile = { workspace = true }
+vt100 = { workspace = true }
