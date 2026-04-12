@@ -13,7 +13,7 @@ pub(crate) fn init_terminal() -> Result<AppTerminal> {
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show);
         original_hook(info);
     }));
 
@@ -34,8 +34,9 @@ pub(crate) fn init_terminal() -> Result<AppTerminal> {
 }
 
 pub(crate) fn restore_terminal(terminal: &mut AppTerminal) -> Result<()> {
-    disable_raw_mode().context("failed to disable raw mode")?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)
-        .context("failed to leave alternate screen")?;
-    terminal.show_cursor().context("failed to restore cursor")
+    let r1 = disable_raw_mode().context("failed to disable raw mode");
+    let r2 = execute!(terminal.backend_mut(), LeaveAlternateScreen)
+        .context("failed to leave alternate screen");
+    let r3 = terminal.show_cursor().context("failed to restore cursor");
+    r1.and(r2).and(r3)
 }
