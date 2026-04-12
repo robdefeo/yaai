@@ -178,18 +178,24 @@ impl TuiApp {
     }
 
     async fn event_loop(&mut self, terminal: &mut AppTerminal) -> Result<()> {
+        let mut dirty = true;
         loop {
             while let Ok(result) = self.result_rx.try_recv() {
                 self.state.complete_run(result);
+                dirty = true;
             }
 
-            terminal.draw(|frame| self.render(frame))?;
+            if dirty {
+                terminal.draw(|frame| self.render(frame))?;
+                dirty = false;
+            }
 
             if event::poll(Duration::from_millis(50))? {
                 let evt = event::read()?;
                 if self.handle_event(evt).await? {
                     return Ok(());
                 }
+                dirty = true;
             }
         }
     }
