@@ -17,7 +17,6 @@ use ratatui::{
 };
 use tokio::sync::mpsc;
 use tui_textarea::TextArea;
-use unicode_width::UnicodeWidthStr;
 
 use crate::config::YaaiConfig;
 
@@ -118,13 +117,21 @@ impl AppState {
                 TranscriptRole::Error => "Error",
             };
 
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{label}: "),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(entry.content.clone()),
-            ]));
+            let mut first = true;
+            for sub in entry.content.split('\n') {
+                if first {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("{label}: "),
+                            Style::default().add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw(sub.to_string()),
+                    ]));
+                    first = false;
+                } else {
+                    lines.push(Line::from(Span::raw(sub.to_string())));
+                }
+            }
             lines.push(Line::from(""));
         }
 
@@ -138,6 +145,7 @@ struct TuiApp {
     run_args: ResolvedRunArgs,
     result_rx: mpsc::UnboundedReceiver<Result<PromptRunResult, String>>,
     result_tx: mpsc::UnboundedSender<Result<PromptRunResult, String>>,
+    active_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl TuiApp {
@@ -157,6 +165,7 @@ impl TuiApp {
             run_args,
             result_rx,
             result_tx,
+            active_task: None,
         }
     }
 
@@ -164,8 +173,8 @@ impl TuiApp {
         let mut terminal = init_terminal()?;
 
         let run_result = self.event_loop(&mut terminal).await;
-        restore_terminal(&mut terminal)?;
-        run_result
+        let restore_result = restore_terminal(&mut terminal);
+        run_result.and(restore_result)
     }
 
     async fn event_loop(&mut self, terminal: &mut AppTerminal) -> Result<()> {
@@ -192,6 +201,9 @@ impl TuiApp {
             }
 
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                if let Some(task) = self.active_task.take() {
+                    task.abort();
+                }
                 return Ok(true);
             }
 
@@ -220,12 +232,16 @@ impl TuiApp {
         let tx = self.result_tx.clone();
         let run_args = self.run_args.clone();
 
-        tokio::spawn(async move {
+        if let Some(old) = self.active_task.take() {
+            old.abort();
+        }
+        let handle = tokio::spawn(async move {
             let result = run_prompt(&input, &run_args)
                 .await
                 .map_err(|err| err.to_string());
             let _ = tx.send(result);
         });
+        self.active_task = Some(handle);
     }
 
     fn render(&mut self, frame: &mut Frame<'_>) {
@@ -233,7 +249,7 @@ impl TuiApp {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Min(1),
-                Constraint::Length(composer_height(&self.composer)),
+                Constraint::Length(composer_height(&self.composer, frame.area().width)),
                 Constraint::Length(1),
             ])
             .split(frame.area());
@@ -276,25 +292,36 @@ fn new_composer() -> TextArea<'static> {
     composer
 }
 
-fn composer_height(composer: &TextArea<'_>) -> u16 {
-    let max_width = composer
-        .lines()
-        .iter()
-        .map(|line| UnicodeWidthStr::width(line.as_str()))
-        .max()
-        .unwrap_or(0);
-    let wrapped_hint = textwrap::wrap("Enter submit | Shift+Enter newline", max_width.max(24));
+fn composer_height(composer: &TextArea<'_>, terminal_width: u16) -> u16 {
+    let wrap_width = (terminal_width as usize).max(24);
+    let wrapped_hint = textwrap::wrap("Enter submit | Shift+Enter newline", wrap_width);
     let body_lines = composer.lines().len().max(1);
     let total = body_lines + wrapped_hint.len() + 2;
     total.min(8) as u16
 }
 
 fn init_terminal() -> Result<AppTerminal> {
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        original_hook(info);
+    }));
+
     enable_raw_mode().context("failed to enable raw mode")?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen).context("failed to enter alternate screen")?;
+
+    if let Err(e) = execute!(stdout, EnterAlternateScreen) {
+        let _ = disable_raw_mode();
+        return Err(e).context("failed to enter alternate screen");
+    }
+
     let backend = CrosstermBackend::new(stdout);
-    Terminal::new(backend).context("failed to initialize terminal")
+    Terminal::new(backend).map_err(|e| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        anyhow::anyhow!("failed to initialize terminal: {e}")
+    })
 }
 
 fn restore_terminal(terminal: &mut AppTerminal) -> Result<()> {
@@ -375,7 +402,7 @@ mod tests {
         let mut composer = new_composer();
         composer.insert_str("one\ntwo\nthree\nfour\nfive\nsix\nseven");
 
-        assert_eq!(composer_height(&composer), 8);
+        assert_eq!(composer_height(&composer, 80), 8);
     }
 
     #[test]
