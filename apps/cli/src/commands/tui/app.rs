@@ -161,15 +161,242 @@ impl TuiApp {
 
 #[cfg(test)]
 mod tests {
+    use crossterm::event::{KeyEvent, KeyEventKind, KeyEventState};
+
+    use crate::commands::runner::PromptRunResult;
+
     use super::*;
+
+    fn make_app() -> TuiApp {
+        TuiApp::new(ResolvedRunArgs {
+            model: "openai/gpt-4o".to_string(),
+            traces_dir: "traces".to_string(),
+        })
+    }
+
+    fn key_press(code: KeyCode, modifiers: KeyModifiers) -> Event {
+        Event::Key(KeyEvent {
+            code,
+            modifiers,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        })
+    }
+
+    fn key_release(code: KeyCode) -> Event {
+        Event::Key(KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Release,
+            state: KeyEventState::NONE,
+        })
+    }
+
+    // --- TuiApp::new ---
+
+    #[test]
+    fn new_starts_with_idle_run_state() {
+        let app = make_app();
+        assert_eq!(app.state.run_state, RunState::Idle);
+    }
+
+    #[test]
+    fn new_starts_with_empty_composer() {
+        let app = make_app();
+        assert_eq!(app.composer.lines().len(), 1);
+        assert_eq!(app.composer.lines()[0], "");
+    }
+
+    #[test]
+    fn new_starts_with_no_active_task() {
+        let app = make_app();
+        assert!(app.active_task.is_none());
+    }
+
+    // --- handle_event ---
+
+    #[tokio::test]
+    async fn handle_event_key_release_is_ignored() {
+        let mut app = make_app();
+        let exiting = app.handle_event(key_release(KeyCode::Enter)).await.unwrap();
+        assert!(!exiting);
+    }
+
+    #[tokio::test]
+    async fn handle_event_non_key_event_returns_false() {
+        let mut app = make_app();
+        let exiting = app.handle_event(Event::FocusGained).await.unwrap();
+        assert!(!exiting);
+    }
+
+    #[tokio::test]
+    async fn handle_event_ctrl_c_returns_true() {
+        let mut app = make_app();
+        let exiting = app
+            .handle_event(key_press(KeyCode::Char('c'), KeyModifiers::CONTROL))
+            .await
+            .unwrap();
+        assert!(exiting);
+    }
+
+    #[tokio::test]
+    async fn handle_event_ctrl_c_aborts_active_task() {
+        let mut app = make_app();
+        let handle = tokio::spawn(async { std::future::pending::<()>().await });
+        app.active_task = Some(handle);
+
+        app.handle_event(key_press(KeyCode::Char('c'), KeyModifiers::CONTROL))
+            .await
+            .unwrap();
+
+        assert!(app.active_task.is_none());
+    }
+
+    #[tokio::test]
+    async fn handle_event_esc_clears_status() {
+        let mut app = make_app();
+        app.state.status = "custom status".to_string();
+
+        let exiting = app
+            .handle_event(key_press(KeyCode::Esc, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert!(!exiting);
+        assert!(app.state.status.contains("Ready."));
+    }
+
+    #[tokio::test]
+    async fn handle_event_regular_key_appends_to_composer() {
+        let mut app = make_app();
+
+        app.handle_event(key_press(KeyCode::Char('h'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        app.handle_event(key_press(KeyCode::Char('i'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert_eq!(app.composer.lines()[0], "hi");
+    }
+
+    #[tokio::test]
+    async fn handle_event_enter_submits_when_idle_with_text() {
+        let mut app = make_app();
+        app.handle_event(key_press(KeyCode::Char('x'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        app.handle_event(key_press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert_eq!(app.state.run_state, RunState::Running);
+        assert_eq!(app.state.transcript.len(), 1);
+        assert!(app.active_task.is_some());
+        assert_eq!(app.composer.lines()[0], "");
+    }
+
+    #[tokio::test]
+    async fn handle_event_shift_enter_does_not_submit() {
+        let mut app = make_app();
+        app.handle_event(key_press(KeyCode::Char('x'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        app.handle_event(key_press(KeyCode::Enter, KeyModifiers::SHIFT))
+            .await
+            .unwrap();
+
+        assert_eq!(app.state.run_state, RunState::Idle);
+        assert!(app.active_task.is_none());
+    }
+
+    // --- submit_current_prompt ---
+
+    #[tokio::test]
+    async fn submit_current_prompt_noop_on_empty_input() {
+        let mut app = make_app();
+        app.submit_current_prompt();
+        assert_eq!(app.state.run_state, RunState::Idle);
+        assert!(app.active_task.is_none());
+    }
+
+    #[tokio::test]
+    async fn submit_current_prompt_noop_when_already_running() {
+        let mut app = make_app();
+        app.state.run_state = RunState::Running;
+        app.composer.insert_str("some text");
+        app.submit_current_prompt();
+        assert_eq!(app.state.transcript.len(), 0);
+        assert!(app.active_task.is_none());
+    }
+
+    #[tokio::test]
+    async fn submit_current_prompt_clears_composer_and_spawns_task() {
+        let mut app = make_app();
+        app.composer.insert_str("hello");
+        app.submit_current_prompt();
+
+        assert_eq!(app.state.run_state, RunState::Running);
+        assert_eq!(app.state.transcript.len(), 1);
+        assert_eq!(app.state.transcript[0].content, "hello");
+        assert_eq!(app.composer.lines()[0], "");
+        assert!(app.active_task.is_some());
+    }
+
+    #[tokio::test]
+    async fn submit_current_prompt_aborts_previous_task() {
+        let mut app = make_app();
+        let first_handle = tokio::spawn(async { std::future::pending::<()>().await });
+        app.active_task = Some(first_handle);
+
+        app.composer.insert_str("new prompt");
+        app.submit_current_prompt();
+
+        assert!(app.active_task.is_some());
+    }
+
+    // --- result channel ---
+
+    #[tokio::test]
+    async fn result_channel_ok_completes_run() {
+        let mut app = make_app();
+        app.state.start_run("test");
+
+        app.result_tx
+            .send(Ok(PromptRunResult {
+                answer: "done".to_string(),
+                steps_taken: 3,
+            }))
+            .unwrap();
+
+        while let Ok(result) = app.result_rx.try_recv() {
+            app.state.complete_run(result);
+        }
+
+        assert_eq!(app.state.run_state, RunState::Idle);
+        assert!(app.state.status.contains("3"));
+    }
+
+    #[tokio::test]
+    async fn result_channel_err_records_error_entry() {
+        let mut app = make_app();
+        app.state.start_run("test");
+
+        app.result_tx.send(Err("boom".to_string())).unwrap();
+
+        while let Ok(result) = app.result_rx.try_recv() {
+            app.state.complete_run(result);
+        }
+
+        assert_eq!(app.state.run_state, RunState::Idle);
+        assert_eq!(app.state.status, "Run failed.");
+    }
+
+    // --- footer_line ---
 
     #[test]
     fn footer_line_shows_idle_state() {
-        let run_args = ResolvedRunArgs {
-            model: "openai/gpt-4o".to_string(),
-            traces_dir: "traces".to_string(),
-        };
-        let app = TuiApp::new(run_args);
+        let app = make_app();
         let line = app.footer_line();
         let content: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(content.contains("idle"));
@@ -177,11 +404,7 @@ mod tests {
 
     #[test]
     fn footer_line_shows_running_state() {
-        let run_args = ResolvedRunArgs {
-            model: "openai/gpt-4o".to_string(),
-            traces_dir: "traces".to_string(),
-        };
-        let mut app = TuiApp::new(run_args);
+        let mut app = make_app();
         app.state.run_state = RunState::Running;
         let line = app.footer_line();
         let content: String = line.spans.iter().map(|s| s.content.as_ref()).collect();

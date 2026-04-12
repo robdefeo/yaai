@@ -143,3 +143,37 @@ fn tui_accepts_typed_input_before_submit() {
     harness.send_ctrl_c().unwrap();
     harness.wait_for_exit(Duration::from_secs(5)).unwrap();
 }
+
+#[test]
+fn tui_exits_with_zero_status_on_ctrl_c() {
+    let mut harness = spawn_tui().unwrap();
+    harness
+        .wait_for_screen_text("Transcript", Duration::from_secs(5))
+        .unwrap();
+    harness.send_ctrl_c().unwrap();
+    harness.wait_for_exit(Duration::from_secs(5)).unwrap();
+
+    let status = harness.child.wait().unwrap();
+    assert_eq!(
+        status.exit_code(),
+        0,
+        "process should exit cleanly after Ctrl-C"
+    );
+}
+
+#[test]
+fn tui_esc_restores_ready_status() {
+    let mut harness = spawn_tui().unwrap();
+    harness
+        .wait_for_screen_text("Ready.", Duration::from_secs(5))
+        .unwrap();
+
+    // Esc should keep (or restore) the Ready status
+    harness.send_str("\x1b").unwrap();
+    harness
+        .wait_for_screen_text("Ready.", Duration::from_secs(5))
+        .unwrap();
+
+    harness.send_ctrl_c().unwrap();
+    harness.wait_for_exit(Duration::from_secs(5)).unwrap();
+}
