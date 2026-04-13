@@ -142,7 +142,17 @@ impl TuiApp {
         let footer = Paragraph::new(self.footer_line());
         frame.render_widget(footer, chunks[2]);
     }
+}
 
+impl Drop for TuiApp {
+    fn drop(&mut self) {
+        if let Some(task) = self.active_task.take() {
+            task.abort();
+        }
+    }
+}
+
+impl TuiApp {
     pub(crate) fn footer_line(&self) -> Line<'static> {
         let state = match self.state.run_state {
             RunState::Idle => "idle",
