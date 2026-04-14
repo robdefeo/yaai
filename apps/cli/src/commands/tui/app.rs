@@ -54,19 +54,23 @@ impl TuiApp {
         run_result.and(restore_result)
     }
 
+    fn process_run_result(&mut self, result: RunResult) {
+        match result {
+            Ok((run_result, updated_memory)) => {
+                self.session_memory = updated_memory;
+                self.state.complete_run(Ok(run_result));
+            }
+            Err(e) => {
+                self.state.complete_run(Err(e));
+            }
+        }
+    }
+
     async fn event_loop(&mut self, terminal: &mut AppTerminal) -> Result<()> {
         let mut dirty = true;
         loop {
             while let Ok(result) = self.result_rx.try_recv() {
-                match result {
-                    Ok((run_result, updated_memory)) => {
-                        self.session_memory = updated_memory;
-                        self.state.complete_run(Ok(run_result));
-                    }
-                    Err(e) => {
-                        self.state.complete_run(Err(e));
-                    }
-                }
+                self.process_run_result(result);
                 dirty = true;
             }
 
@@ -401,13 +405,7 @@ mod tests {
             .unwrap();
 
         while let Ok(result) = app.result_rx.try_recv() {
-            match result {
-                Ok((run_result, updated_memory)) => {
-                    app.session_memory = updated_memory;
-                    app.state.complete_run(Ok(run_result));
-                }
-                Err(e) => app.state.complete_run(Err(e)),
-            }
+            app.process_run_result(result);
         }
 
         assert_eq!(app.state.run_state, RunState::Idle);
@@ -422,13 +420,7 @@ mod tests {
         app.result_tx.send(Err("boom".to_string())).unwrap();
 
         while let Ok(result) = app.result_rx.try_recv() {
-            match result {
-                Ok((run_result, updated_memory)) => {
-                    app.session_memory = updated_memory;
-                    app.state.complete_run(Ok(run_result));
-                }
-                Err(e) => app.state.complete_run(Err(e)),
-            }
+            app.process_run_result(result);
         }
 
         assert_eq!(app.state.run_state, RunState::Idle);
