@@ -2885,6 +2885,7 @@ dependencies = [
  "vt100",
  "yaai-agent-loop",
  "yaai-llm",
+ "yaai-memory",
  "yaai-orchestrator",
  "yaai-tools",
  "yaai-tracer",
