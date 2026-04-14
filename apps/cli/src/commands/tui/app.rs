@@ -11,6 +11,7 @@ use ratatui::{
 };
 use tokio::sync::mpsc;
 use tui_textarea::TextArea;
+use yaai_memory::SessionMemory;
 
 use crate::commands::runner::{run_prompt, PromptRunResult, ResolvedRunArgs};
 
@@ -18,12 +19,15 @@ use super::composer::{composer_height, new_composer};
 use super::state::{AppState, RunState};
 use super::terminal::{init_terminal, restore_terminal, AppTerminal};
 
+type RunResult = Result<(PromptRunResult, SessionMemory), String>;
+
 pub(crate) struct TuiApp {
     pub(crate) state: AppState,
     composer: TextArea<'static>,
     run_args: ResolvedRunArgs,
-    result_rx: mpsc::UnboundedReceiver<Result<PromptRunResult, String>>,
-    result_tx: mpsc::UnboundedSender<Result<PromptRunResult, String>>,
+    pub(crate) session_memory: SessionMemory,
+    result_rx: mpsc::UnboundedReceiver<RunResult>,
+    result_tx: mpsc::UnboundedSender<RunResult>,
     active_task: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -35,6 +39,7 @@ impl TuiApp {
             state: AppState::default(),
             composer: new_composer(),
             run_args,
+            session_memory: SessionMemory::new(),
             result_rx,
             result_tx,
             active_task: None,
@@ -53,7 +58,15 @@ impl TuiApp {
         let mut dirty = true;
         loop {
             while let Ok(result) = self.result_rx.try_recv() {
-                self.state.complete_run(result);
+                match result {
+                    Ok((run_result, updated_memory)) => {
+                        self.session_memory = updated_memory;
+                        self.state.complete_run(Ok(run_result));
+                    }
+                    Err(e) => {
+                        self.state.complete_run(Err(e));
+                    }
+                }
                 dirty = true;
             }
 
@@ -109,14 +122,18 @@ impl TuiApp {
         self.composer = new_composer();
         let tx = self.result_tx.clone();
         let run_args = self.run_args.clone();
+        let memory_snapshot = self.session_memory.clone();
 
         if let Some(old) = self.active_task.take() {
             old.abort();
         }
+        while self.result_rx.try_recv().is_ok() {}
         let handle = tokio::spawn(async move {
-            let result = run_prompt(&input, &run_args)
+            let mut memory = memory_snapshot;
+            let result = run_prompt(&input, &run_args, &mut memory)
                 .await
-                .map_err(|err| err.to_string());
+                .map(|r| (r, memory))
+                .map_err(|e| e.to_string());
             let _ = tx.send(result);
         });
         self.active_task = Some(handle);
@@ -172,6 +189,7 @@ impl TuiApp {
 #[cfg(test)]
 mod tests {
     use crossterm::event::{KeyEvent, KeyEventKind, KeyEventState};
+    use yaai_memory::SessionMemory;
 
     use crate::commands::runner::PromptRunResult;
 
@@ -373,14 +391,23 @@ mod tests {
         app.state.start_run("test");
 
         app.result_tx
-            .send(Ok(PromptRunResult {
-                answer: "done".to_string(),
-                steps_taken: 3,
-            }))
+            .send(Ok((
+                PromptRunResult {
+                    answer: "done".to_string(),
+                    steps_taken: 3,
+                },
+                SessionMemory::new(),
+            )))
             .unwrap();
 
         while let Ok(result) = app.result_rx.try_recv() {
-            app.state.complete_run(result);
+            match result {
+                Ok((run_result, updated_memory)) => {
+                    app.session_memory = updated_memory;
+                    app.state.complete_run(Ok(run_result));
+                }
+                Err(e) => app.state.complete_run(Err(e)),
+            }
         }
 
         assert_eq!(app.state.run_state, RunState::Idle);
@@ -395,7 +422,13 @@ mod tests {
         app.result_tx.send(Err("boom".to_string())).unwrap();
 
         while let Ok(result) = app.result_rx.try_recv() {
-            app.state.complete_run(result);
+            match result {
+                Ok((run_result, updated_memory)) => {
+                    app.session_memory = updated_memory;
+                    app.state.complete_run(Ok(run_result));
+                }
+                Err(e) => app.state.complete_run(Err(e)),
+            }
         }
 
         assert_eq!(app.state.run_state, RunState::Idle);

@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 yaai-agent-loop = { path = "../../crates/agent-loop" }
 yaai-llm = { path = "../../crates/llm" }
+yaai-memory = { path = "../../crates/memory" }
 yaai-tools = { path = "../../crates/tools" }
 yaai-orchestrator = { path = "../../crates/orchestrator" }
 yaai-tracer = { path = "../../crates/tracer" }
