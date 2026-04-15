@@ -133,10 +133,8 @@ impl TuiApp {
         }
         while self.result_rx.try_recv().is_ok() {}
         let handle = tokio::spawn(async move {
-            let mut memory = memory_snapshot;
-            let result = run_prompt(&input, &run_args, &mut memory)
+            let result = run_prompt(&input, &run_args, memory_snapshot)
                 .await
-                .map(|r| (r, memory))
                 .map_err(|e| e.to_string());
             let _ = tx.send(result);
         });

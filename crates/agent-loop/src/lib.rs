@@ -32,6 +32,10 @@ pub struct AgentResult {
     pub answer: String,
     /// Number of loop iterations consumed.
     pub steps_taken: u32,
+    /// Final conversation history. Skipped during serialisation to keep
+    /// the JSON output lean; inspect it directly when testing or introspecting.
+    #[serde(skip)]
+    pub memory: SessionMemory,
 }
 
 /// Drives an agent through its ReAct execution loop.
@@ -40,7 +44,7 @@ pub struct AgentRunner<'a> {
     llm: &'a dyn LlmClient,
     tools: &'a ToolRegistry,
     tracer: &'a Tracer,
-    memory: &'a mut SessionMemory,
+    memory: SessionMemory,
 }
 
 impl<'a> AgentRunner<'a> {
@@ -49,23 +53,34 @@ impl<'a> AgentRunner<'a> {
         llm: &'a dyn LlmClient,
         tools: &'a ToolRegistry,
         tracer: &'a Tracer,
-        memory: &'a mut SessionMemory,
     ) -> Self {
         Self {
             config,
             llm,
             tools,
             tracer,
-            memory,
+            memory: SessionMemory::new(),
         }
+    }
+
+    /// Seed the runner with existing conversation history.
+    ///
+    /// Use this for multi-turn conversations where the history from a previous
+    /// run should be carried forward. For a fresh, stateless run, omit this call.
+    pub fn with_memory(self, memory: SessionMemory) -> Self {
+        Self { memory, ..self }
     }
 
     /// Run the agent loop on the given task, returning the final answer.
     ///
+    /// Consumes the runner. The returned [`AgentResult`] includes the final
+    /// conversation history so callers can inspect it without holding a separate
+    /// mutable reference throughout the run.
+    ///
     /// The caller is responsible for calling [`Tracer::close`] on the tracer
     /// after this method returns (success or error) to shut down the background
     /// writer task cleanly.
-    pub async fn run(&mut self, task: impl Into<String>) -> Result<AgentResult> {
+    pub async fn run(mut self, task: impl Into<String>) -> Result<AgentResult> {
         let task = task.into();
         let run_id = self.tracer.run_id();
 
@@ -170,6 +185,7 @@ impl<'a> AgentRunner<'a> {
                     agent_id: self.config.id.clone(),
                     answer,
                     steps_taken: step + 1,
+                    memory: self.memory,
                 });
             }
         }

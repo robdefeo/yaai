@@ -2882,6 +2882,7 @@ dependencies = [
  "tracing",
  "tui-textarea",
  "unicode-width 0.2.0",
+ "uuid",
  "vt100",
  "yaai-agent-loop",
  "yaai-llm",

@@ -26,6 +26,7 @@ tracing = { workspace = true }
 tokio = { workspace = true }
 tui-textarea = { workspace = true }
 unicode-width = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 portable-pty = { workspace = true }

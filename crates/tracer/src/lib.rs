@@ -171,8 +171,10 @@ async fn writer_task(path: PathBuf, mut rx: mpsc::UnboundedReceiver<WriterMsg>) 
     while let Some(msg) = rx.recv().await {
         match msg {
             WriterMsg::Event(event) => {
-                let mut line = serde_json::to_string(&event).context("serialising trace event")?;
-                line.push('\n');
+                let line = format!(
+                    "{}\n",
+                    serde_json::to_string(&event).context("serialising trace event")?
+                );
                 file.write_all(line.as_bytes())
                     .await
                     .with_context(|| format!("writing to {}", path.display()))?;

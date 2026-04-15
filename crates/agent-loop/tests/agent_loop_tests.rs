@@ -3,7 +3,6 @@ use tempfile::{NamedTempFile, TempDir};
 use uuid::Uuid;
 use yaai_agent_loop::{AgentConfig, AgentRunner};
 use yaai_llm::{LlmResponse, StubClient};
-use yaai_memory::SessionMemory;
 use yaai_tools::{builtin::ReadTool, ToolRegistry};
 use yaai_tracer::Tracer;
 
@@ -32,10 +31,9 @@ fn temp_file_path() -> (NamedTempFile, String) {
 async fn produces_final_answer_without_tools() {
     let llm = StubClient::new(vec![LlmResponse::text("The answer is 42.")]);
     let tools = ToolRegistry::new();
-    let mut mem = SessionMemory::new();
     let (_tmp, tr) = tracer();
 
-    let result = AgentRunner::new(&cfg(5), &llm, &tools, &tr, &mut mem)
+    let result = AgentRunner::new(&cfg(5), &llm, &tools, &tr)
         .run("What is the answer?")
         .await
         .unwrap();
@@ -52,12 +50,10 @@ async fn calls_tool_then_answers() {
         LlmResponse::tool("read", serde_json::json!({"file_path": path})),
         LlmResponse::text("The answer is 42."),
     ]);
-    let mut tools = ToolRegistry::new();
-    tools.register(ReadTool::new());
-    let mut mem = SessionMemory::new();
+    let tools = ToolRegistry::new().register(ReadTool::new());
     let (_tmp, tr) = tracer();
 
-    let result = AgentRunner::new(&cfg(5), &llm, &tools, &tr, &mut mem)
+    let result = AgentRunner::new(&cfg(5), &llm, &tools, &tr)
         .run("Read the file")
         .await
         .unwrap();
@@ -75,12 +71,10 @@ async fn respects_max_steps() {
         LlmResponse::tool("read", serde_json::json!({"file_path": path.clone()})),
         LlmResponse::tool("read", serde_json::json!({"file_path": path})),
     ]);
-    let mut tools = ToolRegistry::new();
-    tools.register(ReadTool::new());
-    let mut mem = SessionMemory::new();
+    let tools = ToolRegistry::new().register(ReadTool::new());
     let (_tmp, tr) = tracer();
 
-    let err = AgentRunner::new(&cfg(3), &llm, &tools, &tr, &mut mem)
+    let err = AgentRunner::new(&cfg(3), &llm, &tools, &tr)
         .run("loop forever")
         .await
         .unwrap_err();
@@ -96,14 +90,12 @@ async fn trace_has_correct_event_sequence() {
         LlmResponse::tool("read", serde_json::json!({"file_path": path})),
         LlmResponse::text("Result is done."),
     ]);
-    let mut tools = ToolRegistry::new();
-    tools.register(ReadTool::new());
-    let mut mem = SessionMemory::new();
+    let tools = ToolRegistry::new().register(ReadTool::new());
     let (_tmp, tr) = tracer();
 
     // Tracer is write-only (streams to ndjson); verify the run completed with
     // the expected step count as a proxy for correct event sequencing.
-    let result = AgentRunner::new(&cfg(5), &llm, &tools, &tr, &mut mem)
+    let result = AgentRunner::new(&cfg(5), &llm, &tools, &tr)
         .run("Read file")
         .await
         .unwrap();
@@ -121,18 +113,16 @@ async fn memory_accumulates_across_steps() {
         LlmResponse::tool("read", serde_json::json!({"file_path": path})),
         LlmResponse::text("Done."),
     ]);
-    let mut tools = ToolRegistry::new();
-    tools.register(ReadTool::new());
-    let mut mem = SessionMemory::new();
+    let tools = ToolRegistry::new().register(ReadTool::new());
     let (_tmp, tr) = tracer();
 
-    AgentRunner::new(&cfg(5), &llm, &tools, &tr, &mut mem)
+    let result = AgentRunner::new(&cfg(5), &llm, &tools, &tr)
         .run("task")
         .await
         .unwrap();
 
     // user task + tool result observation + final assistant = at least 3
-    assert!(mem.len() >= 3);
+    assert!(result.memory.len() >= 3);
     tr.close().await.unwrap();
 }
 
@@ -145,15 +135,13 @@ async fn graceful_tool_error_continues_loop() {
         ),
         LlmResponse::text("Handled the error."),
     ]);
-    let mut tools = ToolRegistry::new();
-    tools.register(ReadTool::new());
-    let mut mem = SessionMemory::new();
+    let tools = ToolRegistry::new().register(ReadTool::new());
     let (_tmp, tr) = tracer();
 
     // The tool error should be fed back as a ToolResult observation and the
     // loop should continue to the next LLM call rather than propagating the
     // error up to the caller.
-    let result = AgentRunner::new(&cfg(5), &llm, &tools, &tr, &mut mem)
+    let result = AgentRunner::new(&cfg(5), &llm, &tools, &tr)
         .run("read missing file")
         .await
         .unwrap();
@@ -171,10 +159,9 @@ async fn empty_llm_response_returns_error() {
         tool_call: None,
     }]);
     let tools = ToolRegistry::new();
-    let mut mem = SessionMemory::new();
     let (_tmp, tr) = tracer();
 
-    let err = AgentRunner::new(&cfg(5), &llm, &tools, &tr, &mut mem)
+    let err = AgentRunner::new(&cfg(5), &llm, &tools, &tr)
         .run("task")
         .await
         .unwrap_err();
@@ -202,6 +189,7 @@ fn agent_config_serde_round_trip() {
         agent_id: "agent-1".to_string(),
         answer: "42".to_string(),
         steps_taken: 3,
+        memory: Default::default(),
     };
     let json = serde_json::to_string(&result).unwrap();
     let r2: AgentResult = serde_json::from_str(&json).unwrap();

@@ -96,8 +96,7 @@ pub async fn execute_non_interactive(args: &PromptArgs, cfg: &YaaiConfig) -> Res
         .prompt_text()?
         .ok_or_else(|| anyhow::anyhow!("prompt is required for non-interactive execution"))?;
     let resolved = args.resolve_run_args(cfg)?;
-    let mut memory = SessionMemory::new();
-    let result = run_prompt(&prompt, &resolved, &mut memory).await?;
+    let (result, _memory) = run_prompt(&prompt, &resolved, SessionMemory::new()).await?;
 
     info!(steps = result.steps_taken, "run complete");
     println!("{}", result.answer);
