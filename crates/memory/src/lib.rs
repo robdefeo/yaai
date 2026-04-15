@@ -83,6 +83,7 @@ impl SessionMemory {
     }
 }
 
+// grcov-excl-start: exclude inline unit tests from production coverage
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,3 +135,4 @@ mod tests {
         assert_eq!(e2.role, Role::User);
     }
 }
+// grcov-excl-stop

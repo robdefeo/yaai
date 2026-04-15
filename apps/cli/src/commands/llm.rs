@@ -39,7 +39,6 @@ fn normalize_api_key(key: String, var_name: &str) -> Result<String> {
 }
 
 pub fn build_llm_client(provider: &Provider, model: &str) -> Result<Box<dyn LlmClient>> {
-    // grcov-excl-start
     match provider {
         Provider::OpenAi => {
             let api_key =
@@ -54,12 +53,37 @@ pub fn build_llm_client(provider: &Provider, model: &str) -> Result<Box<dyn LlmC
             Ok(Box::new(AnthropicClient::new(api_key, model)))
         }
     }
-    // grcov-excl-stop
 }
 
+// grcov-excl-start: exclude inline unit tests from production coverage
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn with_env_var<T>(name: &str, value: Option<&str>, test: impl FnOnce() -> T) -> T {
+        let _guard = env_lock().lock().unwrap();
+        let previous = std::env::var_os(name);
+        unsafe {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+        let result = test();
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+        result
+    }
 
     #[test]
     fn parse_openai_model() {
@@ -135,4 +159,68 @@ mod tests {
         let err = normalize_api_key("   \n\t".to_string(), "MY_KEY").unwrap_err();
         assert!(err.to_string().contains("MY_KEY must not be empty"));
     }
+
+    #[test]
+    fn build_openai_client_requires_api_key() {
+        let err = with_env_var("OPENAI_API_KEY", None, || {
+            match build_llm_client(&Provider::OpenAi, "gpt-4o") {
+                Ok(_) => panic!("expected OPENAI_API_KEY lookup to fail"),
+                Err(err) => err,
+            }
+        });
+        assert!(err.to_string().contains("OPENAI_API_KEY env var not set"));
+    }
+
+    #[test]
+    fn build_openai_client_rejects_whitespace_api_key() {
+        let err = with_env_var("OPENAI_API_KEY", Some("   "), || {
+            match build_llm_client(&Provider::OpenAi, "gpt-4o") {
+                Ok(_) => panic!("expected whitespace OPENAI_API_KEY to fail"),
+                Err(err) => err,
+            }
+        });
+        assert!(err.to_string().contains("OPENAI_API_KEY must not be empty"));
+    }
+
+    #[test]
+    fn build_openai_client_accepts_valid_api_key() {
+        with_env_var("OPENAI_API_KEY", Some("sk-openai"), || {
+            assert!(build_llm_client(&Provider::OpenAi, "gpt-4o").is_ok());
+        });
+    }
+
+    #[test]
+    fn build_anthropic_client_requires_api_key() {
+        let err = with_env_var("ANTHROPIC_API_KEY", None, || {
+            match build_llm_client(&Provider::Anthropic, "claude-3-5-sonnet-20241022") {
+                Ok(_) => panic!("expected ANTHROPIC_API_KEY lookup to fail"),
+                Err(err) => err,
+            }
+        });
+        assert!(err
+            .to_string()
+            .contains("ANTHROPIC_API_KEY env var not set"));
+    }
+
+    #[test]
+    fn build_anthropic_client_rejects_whitespace_api_key() {
+        let err = with_env_var("ANTHROPIC_API_KEY", Some("   "), || match build_llm_client(
+            &Provider::Anthropic,
+            "claude-3-5-sonnet-20241022",
+        ) {
+            Ok(_) => panic!("expected whitespace ANTHROPIC_API_KEY to fail"),
+            Err(err) => err,
+        });
+        assert!(err
+            .to_string()
+            .contains("ANTHROPIC_API_KEY must not be empty"));
+    }
+
+    #[test]
+    fn build_anthropic_client_accepts_valid_api_key() {
+        with_env_var("ANTHROPIC_API_KEY", Some("sk-anthropic"), || {
+            assert!(build_llm_client(&Provider::Anthropic, "claude-3-5-sonnet-20241022").is_ok());
+        });
+    }
 }
+// grcov-excl-stop

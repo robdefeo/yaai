@@ -90,7 +90,7 @@ impl PromptArgs {
     }
 }
 
-// grcov-excl-start
+// grcov-excl-start: non-interactive CLI output is thin stdout wiring
 pub async fn execute_non_interactive(args: &PromptArgs, cfg: &YaaiConfig) -> Result<()> {
     let prompt = args
         .prompt_text()?
@@ -105,6 +105,7 @@ pub async fn execute_non_interactive(args: &PromptArgs, cfg: &YaaiConfig) -> Res
 }
 // grcov-excl-stop
 
+// grcov-excl-start: exclude inline unit tests from production coverage
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,3 +219,4 @@ mod tests {
         assert!(err.to_string().contains("must not be empty"));
     }
 }
+// grcov-excl-stop
