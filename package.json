@@ -9,8 +9,8 @@
   },
   "scripts": {
     "prepare": "[ -d .git ] && lefthook install || true",
-    "fmt": "biome format --write .",
-    "lint": "biome check .",
+    "fmt": "biome format --write . --config-path .config",
+    "lint": "biome check . --config-path .config",
     "test": "bun test --pass-with-no-tests"
   }
 }

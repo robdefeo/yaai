@@ -17,13 +17,13 @@ test:
 
 # Lint: rustfmt check + clippy -D warnings + biome
 lint:
-  cargo fmt --check --all
+  cargo fmt --check --all -- --config-path .config
   cargo clippy --workspace --all-targets -- -D warnings
   bun run lint
 
 # Format: rustfmt + biome
 fmt:
-  cargo fmt --all
+  cargo fmt --all -- --config-path .config
   bun run fmt
 
 run:
