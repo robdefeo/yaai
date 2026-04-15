@@ -35,8 +35,7 @@ fn tool_error_execution_failed_display() {
 
 #[test]
 fn lists_registered_tools() {
-    let mut r = ToolRegistry::new();
-    r.register(ReadTool::new());
+    let r = ToolRegistry::new().register(ReadTool::new());
     assert!(r.names().contains(&"read"));
 }
 
@@ -52,8 +51,7 @@ async fn dispatch_unknown_tool_returns_not_found() {
 
 #[tokio::test]
 async fn dispatch_missing_required_field_returns_invalid_input() {
-    let mut registry = ToolRegistry::new();
-    registry.register(ReadTool::new());
+    let registry = ToolRegistry::new().register(ReadTool::new());
 
     match registry.dispatch("read", serde_json::json!({})).await {
         Err(ToolError::InvalidInput { name, reason }) => {
@@ -66,8 +64,7 @@ async fn dispatch_missing_required_field_returns_invalid_input() {
 
 #[tokio::test]
 async fn dispatch_null_required_field_returns_invalid_input() {
-    let mut registry = ToolRegistry::new();
-    registry.register(ReadTool::new());
+    let registry = ToolRegistry::new().register(ReadTool::new());
 
     match registry
         .dispatch("read", serde_json::json!({ "file_path": null }))
@@ -82,8 +79,7 @@ async fn dispatch_null_required_field_returns_invalid_input() {
 
 #[test]
 fn descriptions_anthropic_uses_input_schema_key() {
-    let mut registry = ToolRegistry::new();
-    registry.register(ReadTool::new());
+    let registry = ToolRegistry::new().register(ReadTool::new());
 
     let descs = registry.descriptions(ToolSchemaFormat::Anthropic);
     assert_eq!(descs.len(), 1);
@@ -96,8 +92,7 @@ fn descriptions_anthropic_uses_input_schema_key() {
 
 #[test]
 fn descriptions_openai_uses_function_parameters_key() {
-    let mut registry = ToolRegistry::new();
-    registry.register(ReadTool::new());
+    let registry = ToolRegistry::new().register(ReadTool::new());
 
     let descs = registry.descriptions(ToolSchemaFormat::OpenAi);
     assert_eq!(descs.len(), 1);
@@ -116,8 +111,7 @@ async fn dispatch_read_returns_file_contents() {
     writeln!(f, "line one").unwrap();
     writeln!(f, "line two").unwrap();
 
-    let mut registry = ToolRegistry::new();
-    registry.register(ReadTool::new());
+    let registry = ToolRegistry::new().register(ReadTool::new());
 
     let result = registry
         .dispatch(
@@ -136,8 +130,7 @@ async fn dispatch_read_returns_file_contents() {
 
 #[tokio::test]
 async fn dispatch_read_missing_file_returns_execution_failed() {
-    let mut registry = ToolRegistry::new();
-    registry.register(ReadTool::new());
+    let registry = ToolRegistry::new().register(ReadTool::new());
 
     match registry
         .dispatch(

@@ -1,6 +1,5 @@
 use yaai_agent_loop::AgentConfig;
 use yaai_llm::{LlmResponse, StubClient};
-use yaai_memory::SessionMemory;
 use yaai_orchestrator::run_single;
 use yaai_tools::ToolRegistry;
 
@@ -17,12 +16,10 @@ async fn single_agent_completes() {
     let llm = StubClient::new(vec![LlmResponse::text("final answer")]);
     let tools = ToolRegistry::new();
     let dir = tempfile::tempdir().unwrap();
-    let mut memory = SessionMemory::new();
 
     let result = run_single(
         &cfg("solo"),
         "do a task",
-        &mut memory,
         &llm,
         &tools,
         dir.path().to_str().unwrap(),
@@ -39,12 +36,10 @@ async fn single_agent_closes_tracer_on_error() {
     let llm = StubClient::new(vec![]);
     let tools = ToolRegistry::new();
     let dir = tempfile::tempdir().unwrap();
-    let mut memory = SessionMemory::new();
 
     let err = run_single(
         &cfg("solo"),
         "do a task",
-        &mut memory,
         &llm,
         &tools,
         dir.path().to_str().unwrap(),

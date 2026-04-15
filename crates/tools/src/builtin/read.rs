@@ -1,11 +1,36 @@
 use crate::{Tool, ToolError};
 use async_trait::async_trait;
+use serde::Serialize;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
 
 const DEFAULT_LIMIT: usize = 2000;
 const MAX_BYTES: usize = 512 * 1024; // 512 KB
 const BINARY_SAMPLE_BYTES: usize = 8192;
+
+/// The `lines` range returned inside a [`ReadResult`].
+#[derive(Debug, Serialize)]
+struct LineRange {
+    from: usize,
+    to: usize,
+    total: usize,
+}
+
+/// The serialised response of the `read` tool.
+///
+/// `continuation` is omitted from the JSON entirely when `None`, which lets
+/// callers reliably test for absence rather than having to distinguish `null`
+/// from a missing key.
+#[derive(Debug, Serialize)]
+struct ReadResult<'a> {
+    path: &'a str,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    lines: LineRange,
+    content: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    continuation: Option<String>,
+}
 
 /// Reads a file and returns its contents with line numbers.
 ///
@@ -199,28 +224,28 @@ impl Tool for ReadTool {
         };
         let is_truncated = actual_end < total_lines;
 
-        let mut result = serde_json::json!({
-            "path": file_path,
-            "type": "file",
-            "lines": {
-                "from": from_line,
-                "to": to_line,
-                "total": total_lines
+        let content = output.trim_end_matches('\n');
+        let result = ReadResult {
+            path: file_path,
+            kind: "file",
+            lines: LineRange {
+                from: from_line,
+                to: to_line,
+                total: total_lines,
             },
-            "content": output.trim_end_matches('\n')
-        });
+            content,
+            continuation: is_truncated.then(|| {
+                format!(
+                    "Showing lines {}-{} of {}. Use offset={} to continue reading.",
+                    from_line,
+                    to_line,
+                    total_lines,
+                    actual_end + 1,
+                )
+            }),
+        };
 
-        if is_truncated {
-            result["continuation"] = Value::String(format!(
-                "Showing lines {}-{} of {}. Use offset={} to continue reading.",
-                from_line,
-                to_line,
-                total_lines,
-                actual_end + 1
-            ));
-        }
-
-        Ok(result)
+        Ok(serde_json::to_value(result).expect("ReadResult is always serializable"))
     }
 }
 
@@ -236,14 +261,11 @@ mod tests {
     use tempfile::NamedTempFile;
 
     fn make_input(path: &str, offset: Option<u64>, limit: Option<u64>) -> Value {
-        let mut map = serde_json::json!({ "file_path": path });
-        if let Some(o) = offset {
-            map["offset"] = Value::Number(o.into());
-        }
-        if let Some(l) = limit {
-            map["limit"] = Value::Number(l.into());
-        }
-        map
+        serde_json::json!({
+            "file_path": path,
+            "offset": offset,
+            "limit": limit,
+        })
     }
 
     #[tokio::test]

@@ -79,12 +79,12 @@ impl LlmClient for OpenAiClient {
         debug!(model = %self.model, messages = messages.len(), "calling OpenAI");
 
         // OpenAI expects the system prompt as the first entry in the messages array.
-        let mut full_messages;
+        let prepended: Vec<Message>;
         let messages = if let Some(sys) = system {
-            full_messages = Vec::with_capacity(messages.len() + 1);
-            full_messages.push(Message::system(sys));
-            full_messages.extend_from_slice(messages);
-            full_messages.as_slice()
+            prepended = std::iter::once(Message::system(sys))
+                .chain(messages.iter().cloned())
+                .collect();
+            prepended.as_slice()
         } else {
             messages
         };

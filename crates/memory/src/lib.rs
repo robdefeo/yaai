@@ -81,11 +81,6 @@ impl SessionMemory {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
-
-    /// Remove all entries.
-    pub fn clear(&mut self) {
-        self.entries.clear();
-    }
 }
 
 #[cfg(test)]
@@ -118,15 +113,6 @@ mod tests {
     fn is_empty_on_new() {
         assert!(SessionMemory::new().is_empty());
     }
-
-    #[test]
-    fn clear_empties_memory() {
-        let mut mem = SessionMemory::new();
-        mem.add(Role::User, "hello");
-        mem.clear();
-        assert!(mem.is_empty());
-    }
-
     #[test]
     fn role_serde_round_trip() {
         for (role, expected) in [

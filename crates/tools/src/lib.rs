@@ -54,9 +54,10 @@ impl ToolRegistry {
         Self::default()
     }
 
-    /// Register a tool.
-    pub fn register(&mut self, tool: impl Tool + 'static) {
+    /// Register a tool, returning `self` to allow chaining.
+    pub fn register(mut self, tool: impl Tool + 'static) -> Self {
         self.tools.push(Box::new(tool));
+        self
     }
 
     /// Names of all registered tools.
