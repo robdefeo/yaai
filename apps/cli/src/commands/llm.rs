@@ -75,14 +75,17 @@ mod tests {
                 None => std::env::remove_var(name),
             }
         }
-        let result = test();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(test));
         unsafe {
             match previous {
                 Some(value) => std::env::set_var(name, value),
                 None => std::env::remove_var(name),
             }
         }
-        result
+        match result {
+            Ok(result) => result,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
     }
 
     #[test]
