@@ -78,7 +78,7 @@ enum ContentBlock {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-// grcov-excl-start
+// grcov-excl-start: real HTTP transport requires integration tests or an injected client seam
 #[async_trait]
 impl LlmClient for AnthropicClient {
     async fn complete(&self, system: Option<&str>, messages: &[Message]) -> Result<LlmResponse> {

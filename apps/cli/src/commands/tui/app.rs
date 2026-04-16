@@ -188,6 +188,7 @@ impl TuiApp {
     }
 }
 
+// grcov-excl-start: exclude inline unit tests from production coverage
 #[cfg(test)]
 mod tests {
     use crossterm::event::{KeyEvent, KeyEventKind, KeyEventState};
@@ -444,3 +445,4 @@ mod tests {
         assert!(content.contains("running"));
     }
 }
+// grcov-excl-stop

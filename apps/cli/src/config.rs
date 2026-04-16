@@ -65,6 +65,7 @@ pub fn load() -> Result<YaaiConfig> {
         .with_context(|| format!("invalid config file: {path_str}"))
 }
 
+// grcov-excl-start: exclude inline unit tests from production coverage
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,3 +163,4 @@ mod tests {
         assert!(display.contains("yaai") || display == "the yaai config file");
     }
 }
+// grcov-excl-stop
