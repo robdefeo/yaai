@@ -76,6 +76,7 @@ pub async fn run_prompt_with_client(
     ))
 }
 
+// grcov-excl-start: exclude inline unit tests from production coverage
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,3 +100,4 @@ mod tests {
         assert_eq!(result.steps_taken, 1);
     }
 }
+// grcov-excl-stop
