@@ -5,7 +5,7 @@ use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Modifier, Style},
-    text::Line,
+    text::{Line, Text},
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
@@ -29,6 +29,10 @@ pub(crate) struct TuiApp {
     result_rx: mpsc::UnboundedReceiver<RunResult>,
     result_tx: mpsc::UnboundedSender<RunResult>,
     active_task: Option<tokio::task::JoinHandle<()>>,
+    /// `usize::MAX` means "pinned to bottom — auto-follow new content".
+    scroll_offset: usize,
+    last_max_scroll: usize,
+    last_viewport_height: usize,
 }
 
 impl TuiApp {
@@ -43,6 +47,9 @@ impl TuiApp {
             result_rx,
             result_tx,
             active_task: None,
+            scroll_offset: usize::MAX,
+            last_max_scroll: 0,
+            last_viewport_height: 0,
         }
     }
 
@@ -107,6 +114,21 @@ impl TuiApp {
                 KeyCode::Enter if !key.modifiers.contains(KeyModifiers::SHIFT) => {
                     self.submit_current_prompt();
                 }
+                KeyCode::PageUp => {
+                    let step = self.last_viewport_height.max(1);
+                    let current = self.scroll_offset.min(self.last_max_scroll);
+                    self.scroll_offset = current.saturating_sub(step);
+                }
+                KeyCode::PageDown => {
+                    let step = self.last_viewport_height.max(1);
+                    let current = self.scroll_offset.min(self.last_max_scroll);
+                    let next = current.saturating_add(step);
+                    self.scroll_offset = if next >= self.last_max_scroll {
+                        usize::MAX
+                    } else {
+                        next
+                    };
+                }
                 _ => {
                     self.composer.input(key);
                 }
@@ -123,6 +145,7 @@ impl TuiApp {
         }
 
         self.state.start_run(&input);
+        self.scroll_offset = usize::MAX;
         self.composer = new_composer();
         let tx = self.result_tx.clone();
         let run_args = self.run_args.clone();
@@ -151,10 +174,23 @@ impl TuiApp {
             ])
             .split(frame.area());
 
-        let transcript = Paragraph::new(self.state.transcript_text())
+        let transcript_area = chunks[0];
+        let inner_width = transcript_area.width.saturating_sub(2);
+        let viewport_height = transcript_area.height.saturating_sub(2) as usize;
+
+        let text = self.state.transcript_text();
+        let total_lines = count_wrapped_lines(&text, inner_width);
+        let max_scroll = total_lines.saturating_sub(viewport_height);
+
+        let display_offset = self.scroll_offset.min(max_scroll) as u16;
+        self.last_max_scroll = max_scroll;
+        self.last_viewport_height = viewport_height;
+
+        let transcript = Paragraph::new(text)
             .block(Block::default().borders(Borders::ALL).title("Transcript"))
-            .wrap(Wrap { trim: false });
-        frame.render_widget(transcript, chunks[0]);
+            .wrap(Wrap { trim: false })
+            .scroll((display_offset, 0));
+        frame.render_widget(transcript, transcript_area);
 
         frame.render_widget(&self.composer, chunks[1]);
 
@@ -186,6 +222,25 @@ impl TuiApp {
             ratatui::text::Span::raw(self.state.status.clone()),
         ])
     }
+}
+
+/// Counts the total number of display lines that `text` will occupy when
+/// rendered at `width` columns with word-wrap enabled (matching the
+/// `Wrap { trim: false }` setting used on the transcript `Paragraph`).
+fn count_wrapped_lines(text: &Text<'_>, width: u16) -> usize {
+    let w = width.max(1) as usize;
+    text.lines
+        .iter()
+        .map(|line| {
+            let raw: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            if raw.is_empty() {
+                1
+            } else {
+                textwrap::wrap(&raw, w).len()
+            }
+        })
+        .sum::<usize>()
+        .max(1)
 }
 
 // grcov-excl-start: exclude inline unit tests from production coverage
@@ -443,6 +498,145 @@ mod tests {
         let line = app.footer_line();
         let content: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(content.contains("running"));
+    }
+
+    // --- scrolling ---
+
+    #[test]
+    fn new_starts_pinned_to_bottom() {
+        let app = make_app();
+        assert_eq!(app.scroll_offset, usize::MAX);
+    }
+
+    #[tokio::test]
+    async fn page_up_from_bottom_scrolls_up_by_half_viewport() {
+        let mut app = make_app();
+        app.last_max_scroll = 20;
+        app.last_viewport_height = 10;
+
+        app.handle_event(key_press(KeyCode::PageUp, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        // usize::MAX.min(20) = 20, step = 10, result = 10
+        assert_eq!(app.scroll_offset, 10);
+    }
+
+    #[tokio::test]
+    async fn page_up_from_position_scrolls_up() {
+        let mut app = make_app();
+        app.scroll_offset = 10;
+        app.last_max_scroll = 20;
+        app.last_viewport_height = 10;
+
+        app.handle_event(key_press(KeyCode::PageUp, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[tokio::test]
+    async fn page_up_clamps_to_zero() {
+        let mut app = make_app();
+        app.scroll_offset = 2;
+        app.last_max_scroll = 20;
+        app.last_viewport_height = 10;
+
+        app.handle_event(key_press(KeyCode::PageUp, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[tokio::test]
+    async fn page_down_re_pins_to_bottom_when_reaching_end() {
+        let mut app = make_app();
+        app.scroll_offset = 15;
+        app.last_max_scroll = 20;
+        app.last_viewport_height = 10;
+
+        app.handle_event(key_press(KeyCode::PageDown, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        // 15 + 10 = 25 >= last_max_scroll(20) → pinned
+        assert_eq!(app.scroll_offset, usize::MAX);
+    }
+
+    #[tokio::test]
+    async fn page_down_from_position_scrolls_down() {
+        let mut app = make_app();
+        app.scroll_offset = 5;
+        app.last_max_scroll = 20;
+        app.last_viewport_height = 10;
+
+        app.handle_event(key_press(KeyCode::PageDown, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert_eq!(app.scroll_offset, 15);
+    }
+
+    #[tokio::test]
+    async fn page_down_when_already_pinned_stays_pinned() {
+        let mut app = make_app();
+        // scroll_offset = usize::MAX, last_max_scroll = 20 → current = 20
+        app.last_max_scroll = 20;
+        app.last_viewport_height = 10;
+
+        app.handle_event(key_press(KeyCode::PageDown, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert_eq!(app.scroll_offset, usize::MAX);
+    }
+
+    #[tokio::test]
+    async fn submit_resets_scroll_to_bottom() {
+        let mut app = make_app();
+        app.scroll_offset = 5;
+
+        app.handle_event(key_press(KeyCode::Char('x'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        app.handle_event(key_press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+
+        assert_eq!(app.scroll_offset, usize::MAX);
+    }
+
+    // --- count_wrapped_lines ---
+
+    #[test]
+    fn count_wrapped_lines_single_short_line() {
+        let text = Text::from("hello");
+        assert_eq!(count_wrapped_lines(&text, 80), 1);
+    }
+
+    #[test]
+    fn count_wrapped_lines_empty_line_counts_as_one() {
+        let text = Text::from("");
+        assert_eq!(count_wrapped_lines(&text, 80), 1);
+    }
+
+    #[test]
+    fn count_wrapped_lines_wraps_long_line() {
+        // 20 chars wide, a 40-char string → 2 wrapped lines
+        let text = Text::from("a".repeat(40));
+        assert_eq!(count_wrapped_lines(&text, 20), 2);
+    }
+
+    #[test]
+    fn count_wrapped_lines_sums_multiple_lines() {
+        let text = Text::from(vec![
+            ratatui::text::Line::from("short"),
+            ratatui::text::Line::from("a".repeat(40)),
+        ]);
+        // 1 + 2 = 3 at width 20
+        assert_eq!(count_wrapped_lines(&text, 20), 3);
     }
 }
 // grcov-excl-stop
