@@ -115,12 +115,12 @@ impl TuiApp {
                     self.submit_current_prompt();
                 }
                 KeyCode::PageUp => {
-                    let step = (self.last_viewport_height / 2).max(1);
+                    let step = self.last_viewport_height.max(1);
                     let current = self.scroll_offset.min(self.last_max_scroll);
                     self.scroll_offset = current.saturating_sub(step);
                 }
                 KeyCode::PageDown => {
-                    let step = (self.last_viewport_height / 2).max(1);
+                    let step = self.last_viewport_height.max(1);
                     let current = self.scroll_offset.min(self.last_max_scroll);
                     let next = current.saturating_add(step);
                     self.scroll_offset = if next >= self.last_max_scroll {
@@ -518,8 +518,8 @@ mod tests {
             .await
             .unwrap();
 
-        // usize::MAX.min(20) = 20, step = 10/2 = 5, result = 15
-        assert_eq!(app.scroll_offset, 15);
+        // usize::MAX.min(20) = 20, step = 10, result = 10
+        assert_eq!(app.scroll_offset, 10);
     }
 
     #[tokio::test]
@@ -533,7 +533,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(app.scroll_offset, 5);
+        assert_eq!(app.scroll_offset, 0);
     }
 
     #[tokio::test]
@@ -561,7 +561,7 @@ mod tests {
             .await
             .unwrap();
 
-        // 15 + 5 = 20 >= last_max_scroll(20) → pinned
+        // 15 + 10 = 25 >= last_max_scroll(20) → pinned
         assert_eq!(app.scroll_offset, usize::MAX);
     }
 
@@ -576,7 +576,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(app.scroll_offset, 10);
+        assert_eq!(app.scroll_offset, 15);
     }
 
     #[tokio::test]
