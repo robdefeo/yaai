@@ -182,7 +182,7 @@ impl TuiApp {
         let total_lines = count_wrapped_lines(&text, inner_width);
         let max_scroll = total_lines.saturating_sub(viewport_height);
 
-        let display_offset = self.scroll_offset.min(max_scroll) as u16;
+        let display_offset = u16::try_from(self.scroll_offset.min(max_scroll)).unwrap_or(u16::MAX);
         self.last_max_scroll = max_scroll;
         self.last_viewport_height = viewport_height;
 
@@ -509,7 +509,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn page_up_from_bottom_scrolls_up_by_half_viewport() {
+    async fn page_up_from_bottom_scrolls_up_by_full_viewport() {
         let mut app = make_app();
         app.last_max_scroll = 20;
         app.last_viewport_height = 10;
