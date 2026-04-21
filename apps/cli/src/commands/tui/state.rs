@@ -35,7 +35,7 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             transcript: Vec::new(),
-            status: "Ready. Enter submits, Shift+Enter adds a newline, Ctrl+C exits.".to_string(),
+            status: "Ready. Enter submits, Shift+Enter adds a newline, PageUp/PageDown scrolls, Ctrl+C exits.".to_string(),
             run_state: RunState::Idle,
         }
     }
@@ -78,7 +78,7 @@ impl AppState {
     pub(crate) fn clear_status(&mut self) {
         if self.run_state == RunState::Idle {
             self.status =
-                "Ready. Enter submits, Shift+Enter adds a newline, Ctrl+C exits.".to_string();
+                "Ready. Enter submits, Shift+Enter adds a newline, PageUp/PageDown scrolls, Ctrl+C exits.".to_string();
         }
     }
 
