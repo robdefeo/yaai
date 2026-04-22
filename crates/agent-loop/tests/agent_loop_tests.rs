@@ -3,7 +3,7 @@ use tempfile::{NamedTempFile, TempDir};
 use uuid::Uuid;
 use yaai_agent_loop::{AgentConfig, AgentRunner};
 use yaai_llm::{LlmResponse, StubClient};
-use yaai_tools::{builtin::ReadTool, ToolRegistry};
+use yaai_tools::{builtin::ReadTool, ToolRegistry, ToolSchemaFormat};
 use yaai_tracer::Tracer;
 
 fn cfg(max_steps: u32) -> AgentConfig {
@@ -33,7 +33,7 @@ async fn produces_final_answer_without_tools() {
     let tools = ToolRegistry::new();
     let (_tmp, tr) = tracer();
 
-    let result = AgentRunner::new(&cfg(5), &llm, &tools, &tr)
+    let result = AgentRunner::new(&cfg(5), &llm, &tools, &tr, ToolSchemaFormat::OpenAi)
         .run("What is the answer?")
         .await
         .unwrap();
@@ -47,13 +47,13 @@ async fn produces_final_answer_without_tools() {
 async fn calls_tool_then_answers() {
     let (_f, path) = temp_file_path();
     let llm = StubClient::new(vec![
-        LlmResponse::tool("read", serde_json::json!({"file_path": path})),
+        LlmResponse::tool("call_1", "read", serde_json::json!({"file_path": path})),
         LlmResponse::text("The answer is 42."),
     ]);
     let tools = ToolRegistry::new().register(ReadTool::new());
     let (_tmp, tr) = tracer();
 
-    let result = AgentRunner::new(&cfg(5), &llm, &tools, &tr)
+    let result = AgentRunner::new(&cfg(5), &llm, &tools, &tr, ToolSchemaFormat::OpenAi)
         .run("Read the file")
         .await
         .unwrap();
@@ -67,14 +67,22 @@ async fn calls_tool_then_answers() {
 async fn respects_max_steps() {
     let (_f, path) = temp_file_path();
     let llm = StubClient::new(vec![
-        LlmResponse::tool("read", serde_json::json!({"file_path": path.clone()})),
-        LlmResponse::tool("read", serde_json::json!({"file_path": path.clone()})),
-        LlmResponse::tool("read", serde_json::json!({"file_path": path})),
+        LlmResponse::tool(
+            "call_1",
+            "read",
+            serde_json::json!({"file_path": path.clone()}),
+        ),
+        LlmResponse::tool(
+            "call_2",
+            "read",
+            serde_json::json!({"file_path": path.clone()}),
+        ),
+        LlmResponse::tool("call_3", "read", serde_json::json!({"file_path": path})),
     ]);
     let tools = ToolRegistry::new().register(ReadTool::new());
     let (_tmp, tr) = tracer();
 
-    let err = AgentRunner::new(&cfg(3), &llm, &tools, &tr)
+    let err = AgentRunner::new(&cfg(3), &llm, &tools, &tr, ToolSchemaFormat::OpenAi)
         .run("loop forever")
         .await
         .unwrap_err();
@@ -87,7 +95,7 @@ async fn respects_max_steps() {
 async fn trace_has_correct_event_sequence() {
     let (_f, path) = temp_file_path();
     let llm = StubClient::new(vec![
-        LlmResponse::tool("read", serde_json::json!({"file_path": path})),
+        LlmResponse::tool("call_1", "read", serde_json::json!({"file_path": path})),
         LlmResponse::text("Result is done."),
     ]);
     let tools = ToolRegistry::new().register(ReadTool::new());
@@ -95,7 +103,7 @@ async fn trace_has_correct_event_sequence() {
 
     // Tracer is write-only (streams to ndjson); verify the run completed with
     // the expected step count as a proxy for correct event sequencing.
-    let result = AgentRunner::new(&cfg(5), &llm, &tools, &tr)
+    let result = AgentRunner::new(&cfg(5), &llm, &tools, &tr, ToolSchemaFormat::OpenAi)
         .run("Read file")
         .await
         .unwrap();
@@ -110,19 +118,19 @@ async fn trace_has_correct_event_sequence() {
 async fn memory_accumulates_across_steps() {
     let (_f, path) = temp_file_path();
     let llm = StubClient::new(vec![
-        LlmResponse::tool("read", serde_json::json!({"file_path": path})),
+        LlmResponse::tool("call_1", "read", serde_json::json!({"file_path": path})),
         LlmResponse::text("Done."),
     ]);
     let tools = ToolRegistry::new().register(ReadTool::new());
     let (_tmp, tr) = tracer();
 
-    let result = AgentRunner::new(&cfg(5), &llm, &tools, &tr)
+    let result = AgentRunner::new(&cfg(5), &llm, &tools, &tr, ToolSchemaFormat::OpenAi)
         .run("task")
         .await
         .unwrap();
 
-    // user task + tool result observation + final assistant = at least 3
-    assert!(result.memory.len() >= 3);
+    // user task + assistant tool_call + tool result + final assistant answer = 4
+    assert!(result.memory.len() >= 4);
     tr.close().await.unwrap();
 }
 
@@ -130,6 +138,7 @@ async fn memory_accumulates_across_steps() {
 async fn graceful_tool_error_continues_loop() {
     let llm = StubClient::new(vec![
         LlmResponse::tool(
+            "call_1",
             "read",
             serde_json::json!({"file_path": "/nonexistent/file.txt"}),
         ),
@@ -141,7 +150,7 @@ async fn graceful_tool_error_continues_loop() {
     // The tool error should be fed back as a ToolResult observation and the
     // loop should continue to the next LLM call rather than propagating the
     // error up to the caller.
-    let result = AgentRunner::new(&cfg(5), &llm, &tools, &tr)
+    let result = AgentRunner::new(&cfg(5), &llm, &tools, &tr, ToolSchemaFormat::OpenAi)
         .run("read missing file")
         .await
         .unwrap();
@@ -161,7 +170,7 @@ async fn empty_llm_response_returns_error() {
     let tools = ToolRegistry::new();
     let (_tmp, tr) = tracer();
 
-    let err = AgentRunner::new(&cfg(5), &llm, &tools, &tr)
+    let err = AgentRunner::new(&cfg(5), &llm, &tools, &tr, ToolSchemaFormat::OpenAi)
         .run("task")
         .await
         .unwrap_err();

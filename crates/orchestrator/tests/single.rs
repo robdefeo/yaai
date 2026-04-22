@@ -1,7 +1,7 @@
 use yaai_agent_loop::AgentConfig;
 use yaai_llm::{LlmResponse, StubClient};
 use yaai_orchestrator::run_single;
-use yaai_tools::ToolRegistry;
+use yaai_tools::{ToolRegistry, ToolSchemaFormat};
 
 fn cfg(id: &str) -> AgentConfig {
     AgentConfig {
@@ -23,6 +23,7 @@ async fn single_agent_completes() {
         &llm,
         &tools,
         dir.path().to_str().unwrap(),
+        ToolSchemaFormat::OpenAi,
     )
     .await
     .unwrap();
@@ -43,6 +44,7 @@ async fn single_agent_closes_tracer_on_error() {
         &llm,
         &tools,
         dir.path().to_str().unwrap(),
+        ToolSchemaFormat::OpenAi,
     )
     .await
     .unwrap_err();
