@@ -1,12 +1,25 @@
 use crate::{Tool, ToolError};
 use async_trait::async_trait;
-use serde::Serialize;
+use schemars::{schema_for, JsonSchema};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
 
 const DEFAULT_LIMIT: usize = 2000;
 const MAX_BYTES: usize = 512 * 1024; // 512 KB
 const BINARY_SAMPLE_BYTES: usize = 8192;
+
+/// Typed input for the `read` tool. Used to generate the JSON Schema and
+/// to deserialise the LLM's tool call arguments — keeping both in sync.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ReadInput {
+    /// Absolute path to the file to read.
+    file_path: String,
+    /// 1-indexed line number to start reading from. Defaults to 1. Must be >= 1.
+    offset: Option<u64>,
+    /// Maximum number of lines to return. Defaults to 2000. Must be >= 1.
+    limit: Option<u64>,
+}
 
 /// The `lines` range returned inside a [`ReadResult`].
 #[derive(Debug, Serialize)]
@@ -66,53 +79,39 @@ impl Tool for ReadTool {
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "file_path": {
-                    "type": "string",
-                    "description": "Absolute path to the file to read."
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "1-indexed line number to start reading from. Defaults to 1.",
-                    "minimum": 1
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of lines to return. Defaults to 2000.",
-                    "minimum": 1
-                }
-            },
-            "required": ["file_path"]
-        })
+        let mut schema =
+            serde_json::to_value(schema_for!(ReadInput)).expect("ReadInput schema is always valid");
+        // Drop draft-07 metadata: some OpenAI strict-mode validators reject `$schema`
+        // in `parameters`, and `title` leaks the Rust type name into model-visible errors.
+        if let Some(obj) = schema.as_object_mut() {
+            obj.remove("$schema");
+            obj.remove("title");
+        }
+        schema
     }
 
     async fn execute(&self, input: Value) -> Result<Value, ToolError> {
-        let file_path = input
-            .get("file_path")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidInput {
+        let params: ReadInput =
+            serde_json::from_value(input).map_err(|e| ToolError::InvalidInput {
                 name: self.name().to_string(),
-                reason: "missing or invalid 'file_path' field".to_string(),
+                reason: e.to_string(),
             })?;
 
-        let offset = input
-            .get("offset")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as usize)
-            .unwrap_or(1);
-
-        let limit = input
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as usize)
-            .unwrap_or(DEFAULT_LIMIT);
+        let file_path = &params.file_path;
+        let offset = params.offset.unwrap_or(1) as usize;
+        let limit = params.limit.unwrap_or(DEFAULT_LIMIT as u64) as usize;
 
         if offset == 0 {
             return Err(ToolError::InvalidInput {
                 name: self.name().to_string(),
                 reason: "offset must be >= 1".to_string(),
+            });
+        }
+
+        if limit == 0 {
+            return Err(ToolError::InvalidInput {
+                name: self.name().to_string(),
+                reason: "limit must be >= 1".to_string(),
             });
         }
 
@@ -390,6 +389,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn errors_on_zero_limit() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "line").unwrap();
+
+        let tool = ReadTool::new();
+        let result = tool
+            .execute(make_input(f.path().to_str().unwrap(), None, Some(0)))
+            .await;
+
+        assert!(matches!(result, Err(ToolError::InvalidInput { .. })));
+    }
+
+    #[tokio::test]
     async fn errors_on_zero_offset() {
         let mut f = NamedTempFile::new().unwrap();
         writeln!(f, "line").unwrap();
@@ -511,6 +523,18 @@ mod tests {
 
         let payload = content.trim_start_matches("1: ");
         assert_eq!(payload.len(), big.len(), "line 1 must be returned in full");
+    }
+
+    #[test]
+    fn input_schema_strips_draft_metadata() {
+        let schema = ReadTool::new().input_schema();
+        let obj = schema.as_object().expect("schema must be an object");
+        assert!(!obj.contains_key("$schema"), "$schema must be stripped");
+        assert!(!obj.contains_key("title"), "title must be stripped");
+        assert!(
+            obj.contains_key("properties"),
+            "properties must be preserved"
+        );
     }
 
     #[tokio::test]

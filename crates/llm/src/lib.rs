@@ -12,6 +12,7 @@ pub mod stub;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Build a [`reqwest::Client`] with sensible defaults: 10 s connect timeout,
 /// 120 s overall request timeout.
@@ -27,7 +28,7 @@ pub use anthropic::AnthropicClient;
 pub use openai::OpenAiClient;
 pub use stub::StubClient;
 
-/// A message in the conversation history.
+/// A plain text message in the conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: String,
@@ -57,11 +58,32 @@ impl Message {
     }
 }
 
+/// A structured conversation turn — text, a tool invocation, or a tool result.
+///
+/// Provider clients receive `&[ConversationTurn]` and are responsible for
+/// serialising each variant into their own wire format.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ConversationTurn {
+    Text(Message),
+    AssistantToolCall {
+        /// Provider-issued call ID used to correlate result messages.
+        id: String,
+        name: String,
+        arguments: Value,
+    },
+    ToolResult {
+        tool_call_id: String,
+        content: String,
+    },
+}
+
 /// A tool call emitted by the LLM.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolCall {
+    /// Provider-issued call ID (e.g. `toolu_01…` for Anthropic, `call_01…` for OpenAI).
+    pub id: String,
     pub name: String,
-    pub arguments: serde_json::Value,
+    pub arguments: Value,
 }
 
 /// The LLM's response to a completion request.
@@ -81,10 +103,11 @@ impl LlmResponse {
         }
     }
 
-    pub fn tool(name: impl Into<String>, arguments: serde_json::Value) -> Self {
+    pub fn tool(id: impl Into<String>, name: impl Into<String>, arguments: Value) -> Self {
         Self {
             content: None,
             tool_call: Some(ToolCall {
+                id: id.into(),
                 name: name.into(),
                 arguments,
             }),
@@ -97,19 +120,30 @@ impl LlmResponse {
     }
 }
 
-/// Core LLM abstraction — send messages, receive a response.
+/// Core LLM abstraction — send a structured conversation, receive a response.
 ///
-/// `system` is passed separately so providers that require a dedicated
-/// system field (e.g. Anthropic) can handle it natively, while others
-/// (e.g. OpenAI) can prepend it to the messages array.
+/// `system` is passed separately so providers that require a dedicated system
+/// field (e.g. Anthropic) can handle it natively.
+/// `tools` carries pre-formatted tool descriptors (Anthropic or OpenAI shape)
+/// to include in the request.
 #[async_trait]
 pub trait LlmClient: Send + Sync {
-    async fn complete(&self, system: Option<&str>, messages: &[Message]) -> Result<LlmResponse>;
+    async fn complete(
+        &self,
+        system: Option<&str>,
+        turns: &[ConversationTurn],
+        tools: &[Value],
+    ) -> Result<LlmResponse>;
 }
 
 #[async_trait]
 impl LlmClient for Box<dyn LlmClient> {
-    async fn complete(&self, system: Option<&str>, messages: &[Message]) -> Result<LlmResponse> {
-        (**self).complete(system, messages).await
+    async fn complete(
+        &self,
+        system: Option<&str>,
+        turns: &[ConversationTurn],
+        tools: &[Value],
+    ) -> Result<LlmResponse> {
+        (**self).complete(system, turns, tools).await
     }
 }

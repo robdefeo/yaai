@@ -7,9 +7,9 @@ use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use uuid::Uuid;
-use yaai_llm::{LlmClient, Message};
-use yaai_memory::{Role, SessionMemory};
-use yaai_tools::ToolRegistry;
+use yaai_llm::{ConversationTurn, LlmClient, Message};
+use yaai_memory::{EntryContent, Role, SessionMemory};
+use yaai_tools::{ToolRegistry, ToolSchemaFormat};
 use yaai_tracer::{EventKind, Tracer};
 
 /// Configuration for a single agent instance.
@@ -45,6 +45,7 @@ pub struct AgentRunner<'a> {
     tools: &'a ToolRegistry,
     tracer: &'a Tracer,
     memory: SessionMemory,
+    tool_format: ToolSchemaFormat,
 }
 
 impl<'a> AgentRunner<'a> {
@@ -53,6 +54,7 @@ impl<'a> AgentRunner<'a> {
         llm: &'a dyn LlmClient,
         tools: &'a ToolRegistry,
         tracer: &'a Tracer,
+        tool_format: ToolSchemaFormat,
     ) -> Self {
         Self {
             config,
@@ -60,6 +62,7 @@ impl<'a> AgentRunner<'a> {
             tools,
             tracer,
             memory: SessionMemory::new(),
+            tool_format,
         }
     }
 
@@ -88,20 +91,35 @@ impl<'a> AgentRunner<'a> {
 
         self.memory.add(Role::User, &task);
 
+        let tool_descriptors = self.tools.descriptions(self.tool_format);
+
         for step in 0..self.config.max_steps {
-            let messages: Vec<Message> = self
+            // Build structured conversation turns from memory for the API call.
+            let turns: Vec<ConversationTurn> = self
                 .memory
                 .entries()
                 .iter()
-                .map(|e| Message {
-                    // Role::Tool has no direct equivalent in the current Message format
-                    // (which lacks tool_call_id), so tool observations are surfaced to
-                    // the LLM as user messages to maintain API compatibility.
-                    role: match &e.role {
-                        Role::Tool => "user".to_string(),
-                        other => other.to_string(),
+                .map(|e| match &e.content {
+                    EntryContent::Text { text } => ConversationTurn::Text(Message {
+                        role: e.role.to_string(),
+                        content: text.clone(),
+                    }),
+                    EntryContent::ToolCall {
+                        id,
+                        name,
+                        arguments,
+                    } => ConversationTurn::AssistantToolCall {
+                        id: id.clone(),
+                        name: name.clone(),
+                        arguments: arguments.clone(),
                     },
-                    content: e.content.clone(),
+                    EntryContent::ToolResult {
+                        tool_call_id,
+                        content,
+                    } => ConversationTurn::ToolResult {
+                        tool_call_id: tool_call_id.clone(),
+                        content: content.clone(),
+                    },
                 })
                 .collect();
 
@@ -109,12 +127,12 @@ impl<'a> AgentRunner<'a> {
                 &self.config.id,
                 step,
                 EventKind::Prompt,
-                serde_json::json!({ "message_count": messages.len() }),
+                serde_json::json!({ "turn_count": turns.len() }),
             )?;
 
             let response = self
                 .llm
-                .complete(Some(&self.config.system_prompt), &messages)
+                .complete(Some(&self.config.system_prompt), &turns, &tool_descriptors)
                 .await?;
 
             if response.content.is_none() && response.tool_call.is_none() {
@@ -148,6 +166,17 @@ impl<'a> AgentRunner<'a> {
                     serde_json::json!({ "tool": tc.name, "args": tc.arguments }),
                 )?;
 
+                // Store the assistant's tool-call turn so the next request
+                // includes it — required by both Anthropic and OpenAI protocols.
+                self.memory.add_entry(
+                    Role::Assistant,
+                    EntryContent::ToolCall {
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                        arguments: tc.arguments.clone(),
+                    },
+                );
+
                 let observation = match self.tools.dispatch(&tc.name, tc.arguments.clone()).await {
                     Ok(result) => {
                         self.tracer
@@ -167,9 +196,12 @@ impl<'a> AgentRunner<'a> {
                     }
                 };
 
-                self.memory.add(
-                    Role::Tool,
-                    format!("Tool '{}' returned: {}", tc.name, observation),
+                self.memory.add_entry(
+                    Role::User,
+                    EntryContent::ToolResult {
+                        tool_call_id: tc.id.clone(),
+                        content: observation,
+                    },
                 );
             } else if response.is_final_answer() {
                 let answer = response.content.unwrap_or_default();

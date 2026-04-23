@@ -5,6 +5,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// The role of a message in the session history.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,6 +15,25 @@ pub enum Role {
     User,
     Assistant,
     Tool,
+}
+
+/// The content of a memory entry — either plain text, a tool invocation made
+/// by the assistant, or the result returned to the assistant after execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum EntryContent {
+    Text {
+        text: String,
+    },
+    ToolCall {
+        id: String,
+        name: String,
+        arguments: Value,
+    },
+    ToolResult {
+        tool_call_id: String,
+        content: String,
+    },
 }
 
 impl std::fmt::Display for Role {
@@ -31,15 +51,17 @@ impl std::fmt::Display for Role {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryEntry {
     pub role: Role,
-    pub content: String,
+    pub content: EntryContent,
     pub timestamp: DateTime<Utc>,
 }
 
 impl MemoryEntry {
-    pub fn new(role: Role, content: impl Into<String>) -> Self {
+    pub fn text(role: Role, content: impl Into<String>) -> Self {
         Self {
             role,
-            content: content.into(),
+            content: EntryContent::Text {
+                text: content.into(),
+            },
             timestamp: Utc::now(),
         }
     }
@@ -63,9 +85,18 @@ impl SessionMemory {
         self.entries.push(entry);
     }
 
-    /// Convenience: push a message by role + content.
+    /// Convenience: push a plain-text message.
     pub fn add(&mut self, role: Role, content: impl Into<String>) {
-        self.push(MemoryEntry::new(role, content));
+        self.push(MemoryEntry::text(role, content));
+    }
+
+    /// Convenience: push a structured entry.
+    pub fn add_entry(&mut self, role: Role, content: EntryContent) {
+        self.push(MemoryEntry {
+            role,
+            content,
+            timestamp: chrono::Utc::now(),
+        });
     }
 
     /// All entries in insertion order.
@@ -95,25 +126,60 @@ mod tests {
         mem.add(Role::Assistant, "hi there");
 
         assert_eq!(mem.len(), 2);
-        assert_eq!(mem.entries()[0].content, "hello");
+        assert!(
+            matches!(&mem.entries()[0].content, EntryContent::Text { text } if text == "hello")
+        );
         assert_eq!(mem.entries()[1].role, Role::Assistant);
     }
 
     #[test]
     fn push_directly_with_memory_entry() {
         let mut mem = SessionMemory::new();
-        let entry = MemoryEntry::new(Role::Assistant, "direct push");
+        let entry = MemoryEntry::text(Role::Assistant, "direct push");
         mem.push(entry);
 
         assert_eq!(mem.len(), 1);
         assert_eq!(mem.entries()[0].role, Role::Assistant);
-        assert_eq!(mem.entries()[0].content, "direct push");
+        assert!(
+            matches!(&mem.entries()[0].content, EntryContent::Text { text } if text == "direct push")
+        );
+    }
+
+    #[test]
+    fn add_entry_stores_structured_content() {
+        let mut mem = SessionMemory::new();
+        mem.add_entry(
+            Role::Assistant,
+            EntryContent::ToolCall {
+                id: "call_1".into(),
+                name: "read".into(),
+                arguments: serde_json::json!({ "file_path": "/LICENSE" }),
+            },
+        );
+        mem.add_entry(
+            Role::User,
+            EntryContent::ToolResult {
+                tool_call_id: "call_1".into(),
+                content: "MIT License".into(),
+            },
+        );
+
+        assert_eq!(mem.len(), 2);
+        assert!(matches!(
+            &mem.entries()[0].content,
+            EntryContent::ToolCall { id, .. } if id == "call_1"
+        ));
+        assert!(matches!(
+            &mem.entries()[1].content,
+            EntryContent::ToolResult { tool_call_id, .. } if tool_call_id == "call_1"
+        ));
     }
 
     #[test]
     fn is_empty_on_new() {
         assert!(SessionMemory::new().is_empty());
     }
+
     #[test]
     fn role_serde_round_trip() {
         for (role, expected) in [
@@ -128,11 +194,11 @@ mod tests {
             assert_eq!(r2, role);
         }
 
-        let entry = MemoryEntry::new(Role::User, "hello");
+        let entry = MemoryEntry::text(Role::User, "hello");
         let json = serde_json::to_string(&entry).unwrap();
         let e2: MemoryEntry = serde_json::from_str(&json).unwrap();
-        assert_eq!(e2.content, "hello");
         assert_eq!(e2.role, Role::User);
+        assert!(matches!(e2.content, EntryContent::Text { text } if text == "hello"));
     }
 }
 // grcov-excl-stop
