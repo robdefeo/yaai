@@ -133,5 +133,42 @@ mod tests {
         assert_eq!(result.answer, "final answer");
         assert_eq!(result.steps_taken, 1);
     }
+
+    #[tokio::test]
+    async fn run_prompt_with_client_propagates_agent_error() {
+        let llm = StubClient::new(vec![]);
+        let traces = tempdir().unwrap();
+        let args = ResolvedRunArgs {
+            model: "openai/gpt-4o".to_string(),
+            traces_dir: traces.path().display().to_string(),
+        };
+
+        let err = run_prompt_with_client(
+            "hello",
+            &args,
+            &llm,
+            SessionMemory::new(),
+            ToolSchemaFormat::OpenAi,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("StubClient script exhausted"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_prompt_fails_on_invalid_provider_model() {
+        let args = ResolvedRunArgs {
+            model: "bogus/model".to_string(),
+            traces_dir: tempdir().unwrap().path().display().to_string(),
+        };
+        let err = run_prompt("hi", &args, SessionMemory::new())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("provider"));
+    }
 }
 // grcov-excl-stop
