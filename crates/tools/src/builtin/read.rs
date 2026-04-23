@@ -79,7 +79,15 @@ impl Tool for ReadTool {
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::to_value(schema_for!(ReadInput)).expect("ReadInput schema is always valid")
+        let mut schema =
+            serde_json::to_value(schema_for!(ReadInput)).expect("ReadInput schema is always valid");
+        // Drop draft-07 metadata: some OpenAI strict-mode validators reject `$schema`
+        // in `parameters`, and `title` leaks the Rust type name into model-visible errors.
+        if let Some(obj) = schema.as_object_mut() {
+            obj.remove("$schema");
+            obj.remove("title");
+        }
+        schema
     }
 
     async fn execute(&self, input: Value) -> Result<Value, ToolError> {
@@ -515,6 +523,18 @@ mod tests {
 
         let payload = content.trim_start_matches("1: ");
         assert_eq!(payload.len(), big.len(), "line 1 must be returned in full");
+    }
+
+    #[test]
+    fn input_schema_strips_draft_metadata() {
+        let schema = ReadTool::new().input_schema();
+        let obj = schema.as_object().expect("schema must be an object");
+        assert!(!obj.contains_key("$schema"), "$schema must be stripped");
+        assert!(!obj.contains_key("title"), "title must be stripped");
+        assert!(
+            obj.contains_key("properties"),
+            "properties must be preserved"
+        );
     }
 
     #[tokio::test]
