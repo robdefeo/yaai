@@ -137,6 +137,22 @@ mod tests {
     }
 
     #[test]
+    fn load_reads_existing_config_file() {
+        let dir = tempdir().unwrap();
+        unsafe {
+            std::env::set_var("HOME", dir.path());
+            std::env::set_var("XDG_CONFIG_HOME", dir.path().join("config"));
+        }
+        let Some(path) = config_path() else {
+            return;
+        };
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, r#"{"model":"openai/gpt-4o"}"#).unwrap();
+        let cfg = load().unwrap();
+        assert_eq!(cfg.model.as_deref(), Some("openai/gpt-4o"));
+    }
+
+    #[test]
     fn load_returns_default_when_config_file_absent() {
         let dir = tempdir().unwrap();
         // Point HOME (and XDG_CONFIG_HOME) at an empty temp dir so no config file exists.
