@@ -20,7 +20,6 @@ pub(crate) fn composer_height(composer: &TextArea<'_>, terminal_width: u16) -> u
     total.min(8) as u16
 }
 
-// grcov-excl-start: exclude inline unit tests from production coverage
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -40,4 +39,3 @@ mod tests {
         assert_eq!(composer.lines()[0], "");
     }
 }
-// grcov-excl-stop

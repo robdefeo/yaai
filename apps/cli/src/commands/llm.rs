@@ -55,7 +55,6 @@ pub fn build_llm_client(provider: &Provider, model: &str) -> Result<Box<dyn LlmC
     }
 }
 
-// grcov-excl-start: exclude inline unit tests from production coverage
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,4 +225,3 @@ mod tests {
         });
     }
 }
-// grcov-excl-stop

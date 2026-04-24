@@ -36,27 +36,10 @@ dev:
 # Generate HTML + lcov coverage reports, then check thresholds (lines >= 80%, functions >= 20%);
 # on failure show per-file breakdown sorted by worst coverage
 coverage:
-  mkdir -p coverage coverage/rust-profraw
-  find coverage/rust-profraw -name '*.profraw' -delete
-  CARGO_BUILD_JOBS=1 \
-  CARGO_INCREMENTAL=0 \
-  RUSTFLAGS="-Cinstrument-coverage" \
-  LLVM_PROFILE_FILE="$(pwd)/coverage/rust-profraw/yaai-%p-%m.profraw" \
-  cargo test --workspace
-  mise exec -- grcov coverage/rust-profraw \
-    --binary-path ./target/debug/deps \
-    --llvm-path "$(dirname "$(mise exec -- rustc --print target-libdir)")/bin" \
-    -s . \
-    --branch \
-    --ignore-not-existing \
-    --ignore "${HOME}/.cargo/*" \
-    --ignore "${HOME}/.rustup/*" \
-    --ignore "*/tests/*" \
-    --excl-line "^\s*$|^\s*//|#\[derive\(|grcov-excl-line" \
-    --excl-start "grcov-excl-start" \
-    --excl-stop "grcov-excl-stop" \
-    -t html,lcov \
-    -o coverage
+  mkdir -p coverage
+  cargo llvm-cov --workspace --no-report
+  cargo llvm-cov report --lcov --output-path coverage/lcov
+  cargo llvm-cov report --html --output-dir coverage
   printf "\n  %-50s  %8s  %-10s  %9s  %-10s\n" "File" "Lines" "(hit/tot)" "Functions" "(hit/tot)"
   printf "  %-50s  %8s  %-10s  %9s  %-10s\n" "--------------------------------------------------" "--------" "----------" "---------" "----------"
   awk -F: '\

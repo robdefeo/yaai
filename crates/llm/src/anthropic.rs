@@ -191,7 +191,6 @@ fn parse_blocks(blocks: &[ContentBlock]) -> LlmResponse {
     }
 }
 
-// grcov-excl-start: real HTTP transport requires integration tests or an injected client seam
 #[async_trait]
 impl LlmClient for AnthropicClient {
     async fn complete(
@@ -236,9 +235,7 @@ impl LlmClient for AnthropicClient {
         Ok(parse_blocks(&resp.content))
     }
 }
-// grcov-excl-stop
 
-// grcov-excl-start: exclude inline unit tests from production coverage
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,4 +404,3 @@ mod tests {
         assert!(r.tool_call.is_some());
     }
 }
-// grcov-excl-stop

@@ -119,7 +119,6 @@ impl AppState {
     }
 }
 
-// grcov-excl-start: exclude inline unit tests from production coverage
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,4 +232,3 @@ mod tests {
         assert_eq!(state.status, status_before);
     }
 }
-// grcov-excl-stop

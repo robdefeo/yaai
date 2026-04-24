@@ -146,7 +146,6 @@ fn turn_to_oai(turn: &ConversationTurn) -> OaiMessage {
     }
 }
 
-// grcov-excl-start: real HTTP transport requires integration tests or an injected client seam
 #[async_trait]
 impl LlmClient for OpenAiClient {
     async fn complete(
@@ -222,9 +221,7 @@ impl LlmClient for OpenAiClient {
         })
     }
 }
-// grcov-excl-stop
 
-// grcov-excl-start: exclude inline unit tests from production coverage
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,4 +355,3 @@ mod tests {
         assert!(msg.tool_calls.is_some());
     }
 }
-// grcov-excl-stop

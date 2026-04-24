@@ -118,7 +118,6 @@ impl SessionMemory {
     }
 }
 
-// grcov-excl-start: exclude inline unit tests from production coverage
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,4 +205,3 @@ mod tests {
         assert!(matches!(e2.content, EntryContent::Text { text } if text == "hello"));
     }
 }
-// grcov-excl-stop

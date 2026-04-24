@@ -243,7 +243,6 @@ fn count_wrapped_lines(text: &Text<'_>, width: u16) -> usize {
         .max(1)
 }
 
-// grcov-excl-start: exclude inline unit tests from production coverage
 #[cfg(test)]
 mod tests {
     use crossterm::event::{KeyEvent, KeyEventKind, KeyEventState};
@@ -639,4 +638,3 @@ mod tests {
         assert_eq!(count_wrapped_lines(&text, 20), 3);
     }
 }
-// grcov-excl-stop

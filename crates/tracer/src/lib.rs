@@ -112,11 +112,11 @@ impl Tracer {
         );
         // Only fails if the writer task has exited (e.g. panicked).
         if let Err(err) = self.tx.send(WriterMsg::Event(event)) {
-            tracing::error!( // grcov-excl-line
-                run_id = %self.run_id, // grcov-excl-line
-                error = ?err, // grcov-excl-line
-                "tracer writer task has exited; dropping trace event" // grcov-excl-line
-            ); // grcov-excl-line
+            tracing::error!(
+                run_id = %self.run_id,
+                error = ?err,
+                "tracer writer task has exited; dropping trace event"
+            );
         }
     }
 
