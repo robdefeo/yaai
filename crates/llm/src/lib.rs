@@ -70,6 +70,8 @@ pub enum ConversationTurn {
         id: String,
         name: String,
         arguments: Value,
+        /// Text the model emitted before choosing this tool call (chain-of-thought).
+        reasoning: Option<String>,
     },
     ToolResult {
         tool_call_id: String,

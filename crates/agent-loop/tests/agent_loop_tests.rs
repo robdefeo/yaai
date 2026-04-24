@@ -2,7 +2,8 @@ use std::io::Write;
 use tempfile::{NamedTempFile, TempDir};
 use uuid::Uuid;
 use yaai_agent_loop::{AgentConfig, AgentRunner};
-use yaai_llm::{LlmResponse, StubClient};
+use yaai_llm::{LlmResponse, StubClient, ToolCall};
+use yaai_memory::EntryContent;
 use yaai_tools::{builtin::ReadTool, ToolRegistry, ToolSchemaFormat};
 use yaai_tracer::Tracer;
 
@@ -176,6 +177,83 @@ async fn empty_llm_response_returns_error() {
         .unwrap_err();
 
     assert!(err.to_string().contains("empty LLM response"));
+    tr.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn reasoning_with_tool_call_stored_as_single_memory_entry() {
+    let (_f, path) = temp_file_path();
+    // Simulate a response that has both reasoning text and a tool call.
+    let llm = StubClient::new(vec![
+        LlmResponse {
+            content: Some("I should read the file first.".to_string()),
+            tool_call: Some(ToolCall {
+                id: "call_1".to_string(),
+                name: "read".to_string(),
+                arguments: serde_json::json!({"file_path": path}),
+            }),
+        },
+        LlmResponse::text("Done."),
+    ]);
+    let tools = ToolRegistry::new().register(ReadTool::new());
+    let (_tmp, tr) = tracer();
+
+    let result = AgentRunner::new(&cfg(5), &llm, &tools, &tr, ToolSchemaFormat::OpenAi)
+        .run("task")
+        .await
+        .unwrap();
+
+    // Exactly 4 entries: user task, assistant tool_call (with reasoning), tool result, final answer.
+    assert_eq!(result.memory.len(), 4);
+
+    // The tool-call entry must carry the reasoning.
+    let tool_call_entry = &result.memory.entries()[1];
+    assert!(
+        matches!(&tool_call_entry.content, EntryContent::ToolCall { reasoning, .. } if reasoning.as_deref() == Some("I should read the file first."))
+    );
+    tr.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn tool_call_without_reasoning_stores_no_reasoning() {
+    let (_f, path) = temp_file_path();
+    let llm = StubClient::new(vec![
+        LlmResponse::tool("call_1", "read", serde_json::json!({"file_path": path})),
+        LlmResponse::text("Done."),
+    ]);
+    let tools = ToolRegistry::new().register(ReadTool::new());
+    let (_tmp, tr) = tracer();
+
+    let result = AgentRunner::new(&cfg(5), &llm, &tools, &tr, ToolSchemaFormat::OpenAi)
+        .run("task")
+        .await
+        .unwrap();
+
+    let tool_call_entry = &result.memory.entries()[1];
+    assert!(
+        matches!(&tool_call_entry.content, EntryContent::ToolCall { reasoning, .. } if reasoning.is_none())
+    );
+    tr.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn standalone_text_response_stored_as_text_memory_entry() {
+    // Regression: response.content = Some(...) with no tool call must create a
+    // standalone Text entry in memory. The `if response.tool_call.is_none()`
+    // guard in the agent loop is the only thing keeping this path working.
+    let llm = StubClient::new(vec![LlmResponse::text("Just a text answer.")]);
+    let tools = ToolRegistry::new();
+    let (_tmp, tr) = tracer();
+
+    let result = AgentRunner::new(&cfg(5), &llm, &tools, &tr, ToolSchemaFormat::OpenAi)
+        .run("task")
+        .await
+        .unwrap();
+
+    // user task + assistant text answer = 2 entries
+    assert_eq!(result.memory.len(), 2);
+    let entry = &result.memory.entries()[1];
+    assert!(matches!(&entry.content, EntryContent::Text { text } if text == "Just a text answer."));
     tr.close().await.unwrap();
 }
 

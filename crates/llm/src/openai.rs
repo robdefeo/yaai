@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::debug;
 
-use crate::{ConversationTurn, LlmClient, LlmResponse, Message};
+use crate::{ConversationTurn, LlmClient, LlmResponse, Message, ToolCall};
 
 #[derive(Debug, Clone)]
 pub struct OpenAiClient {
@@ -120,9 +120,10 @@ fn turn_to_oai(turn: &ConversationTurn) -> OaiMessage {
             id,
             name,
             arguments,
+            reasoning,
         } => OaiMessage {
             role: "assistant",
-            content: None,
+            content: reasoning.clone(),
             tool_calls: Some(vec![OaiOutboundToolCall {
                 id: id.clone(),
                 kind: "function",
@@ -204,7 +205,14 @@ impl LlmClient for OpenAiClient {
             if let Some(tc) = tool_calls.into_iter().next() {
                 let args: Value = serde_json::from_str(&tc.function.arguments)
                     .context("parsing tool call arguments")?;
-                return Ok(LlmResponse::tool(tc.id, tc.function.name, args));
+                return Ok(LlmResponse {
+                    content: msg.content, // preserve any reasoning alongside the tool call
+                    tool_call: Some(ToolCall {
+                        id: tc.id,
+                        name: tc.function.name,
+                        arguments: args,
+                    }),
+                });
             }
         }
 
@@ -256,6 +264,7 @@ mod tests {
             id: "call_01".to_string(),
             name: "read".to_string(),
             arguments: serde_json::json!({"file_path": "/tmp/a.txt"}),
+            reasoning: None,
         };
         let msg = turn_to_oai(&turn);
         assert_eq!(msg.role, "assistant");
@@ -319,6 +328,34 @@ mod tests {
         let json = serde_json::to_value(&msg).unwrap();
         assert!(json.get("tool_calls").is_none());
         assert!(json.get("tool_call_id").is_none());
+    }
+
+    #[test]
+    fn tool_call_with_reasoning_sets_content_alongside_tool_calls() {
+        let turn = ConversationTurn::AssistantToolCall {
+            id: "call_01".to_string(),
+            name: "read".to_string(),
+            arguments: serde_json::json!({"file_path": "/tmp/a.txt"}),
+            reasoning: Some("I should read the file.".to_string()),
+        };
+        let msg = turn_to_oai(&turn);
+        assert_eq!(msg.role, "assistant");
+        assert_eq!(msg.content.as_deref(), Some("I should read the file."));
+        assert!(msg.tool_calls.is_some());
+        assert_eq!(msg.tool_calls.unwrap()[0].id, "call_01");
+    }
+
+    #[test]
+    fn tool_call_without_reasoning_has_no_content() {
+        let turn = ConversationTurn::AssistantToolCall {
+            id: "call_02".to_string(),
+            name: "read".to_string(),
+            arguments: serde_json::json!({}),
+            reasoning: None,
+        };
+        let msg = turn_to_oai(&turn);
+        assert!(msg.content.is_none());
+        assert!(msg.tool_calls.is_some());
     }
 }
 // grcov-excl-stop

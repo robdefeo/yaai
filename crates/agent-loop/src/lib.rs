@@ -108,10 +108,12 @@ impl<'a> AgentRunner<'a> {
                         id,
                         name,
                         arguments,
+                        reasoning,
                     } => ConversationTurn::AssistantToolCall {
                         id: id.clone(),
                         name: name.clone(),
                         arguments: arguments.clone(),
+                        reasoning: reasoning.clone(),
                     },
                     EntryContent::ToolResult {
                         tool_call_id,
@@ -151,9 +153,18 @@ impl<'a> AgentRunner<'a> {
             }
 
             if let Some(ref text) = response.content {
+                // Emit a Decision trace for reasoning text regardless of whether a
+                // tool call follows — reasoning is always worth tracing. When a tool
+                // call is present the text is *not* added to memory here; instead it
+                // is stored inside the ToolCall entry below so both are replayed as a
+                // single assistant message (required by Anthropic and OpenAI).
                 self.tracer
                     .emit(&self.config.id, step, EventKind::Decision, text)?;
-                self.memory.add(Role::Assistant, text);
+                // Only store a standalone text entry when there is no tool call.
+                // When a tool call is present, the reasoning is stored inside it.
+                if response.tool_call.is_none() {
+                    self.memory.add(Role::Assistant, text);
+                }
             }
 
             if let Some(tc) = &response.tool_call {
@@ -166,14 +177,15 @@ impl<'a> AgentRunner<'a> {
                     serde_json::json!({ "tool": tc.name, "args": tc.arguments }),
                 )?;
 
-                // Store the assistant's tool-call turn so the next request
-                // includes it — required by both Anthropic and OpenAI protocols.
+                // Store reasoning alongside the tool call so both are replayed as
+                // a single assistant message — required by Anthropic and OpenAI.
                 self.memory.add_entry(
                     Role::Assistant,
                     EntryContent::ToolCall {
                         id: tc.id.clone(),
                         name: tc.name.clone(),
                         arguments: tc.arguments.clone(),
+                        reasoning: response.content.clone(),
                     },
                 );
 

@@ -29,6 +29,10 @@ pub enum EntryContent {
         id: String,
         name: String,
         arguments: Value,
+        /// Text emitted by the model before the tool call (e.g. chain-of-thought).
+        /// Preserved so it can be replayed as part of the same assistant message.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning: Option<String>,
     },
     ToolResult {
         tool_call_id: String,
@@ -154,6 +158,7 @@ mod tests {
                 id: "call_1".into(),
                 name: "read".into(),
                 arguments: serde_json::json!({ "file_path": "/LICENSE" }),
+                reasoning: None,
             },
         );
         mem.add_entry(
