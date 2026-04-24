@@ -65,7 +65,6 @@ pub fn load() -> Result<YaaiConfig> {
         .with_context(|| format!("invalid config file: {path_str}"))
 }
 
-// grcov-excl-start: exclude inline unit tests from production coverage
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,9 +147,7 @@ mod tests {
             std::env::set_var("HOME", dir.path());
             std::env::set_var("XDG_CONFIG_HOME", dir.path().join("config"));
         }
-        let Some(path) = config_path() else {
-            return;
-        };
+        let path = config_path().expect("config_path() should resolve with HOME set");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, r#"{"model":"openai/gpt-4o"}"#).unwrap();
         let cfg = load().unwrap();
@@ -185,4 +182,3 @@ mod tests {
         assert!(display.contains("yaai") || display == "the yaai config file");
     }
 }
-// grcov-excl-stop

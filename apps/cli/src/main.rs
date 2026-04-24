@@ -61,7 +61,6 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // grcov-excl-start: process entrypoint wiring and terminal dispatch are covered indirectly
     let config_path = config::config_path_display();
 
     let matches = Cli::command()
@@ -105,10 +104,8 @@ async fn main() -> Result<()> {
     } else {
         commands::tui::execute(&cli.args, &cfg).await
     }
-    // grcov-excl-stop
 }
 
-// grcov-excl-start: exclude inline unit tests from production coverage
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,4 +122,3 @@ mod tests {
         assert_eq!(cli.args.prompt_text().unwrap(), Some("hello".to_string()));
     }
 }
-// grcov-excl-stop
