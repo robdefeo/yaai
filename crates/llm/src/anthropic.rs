@@ -152,6 +152,45 @@ fn turn_to_anthropic(turn: &ConversationTurn) -> AnthropicMessage {
     }
 }
 
+/// Parse a slice of [`ContentBlock`]s into an [`LlmResponse`].
+///
+/// Text blocks are concatenated (newline-separated) so that multiple `Text`
+/// blocks before a `ToolUse` are all preserved as reasoning. The first
+/// `ToolUse` block terminates the scan and the accumulated text is returned
+/// as `content` alongside the tool call.
+fn parse_blocks(blocks: &[ContentBlock]) -> LlmResponse {
+    let mut reasoning: Option<String> = None;
+    for block in blocks {
+        match block {
+            ContentBlock::Text { text } => match reasoning.as_mut() {
+                Some(r) => {
+                    r.push('\n');
+                    r.push_str(text);
+                }
+                None => reasoning = Some(text.clone()),
+            },
+            ContentBlock::ToolUse { id, name, input } => {
+                return LlmResponse {
+                    content: reasoning,
+                    tool_call: Some(ToolCall {
+                        id: id.clone(),
+                        name: name.clone(),
+                        arguments: input.clone(),
+                    }),
+                };
+            }
+            ContentBlock::Unknown => {}
+        }
+    }
+    if let Some(text) = reasoning {
+        return LlmResponse::text(text);
+    }
+    LlmResponse {
+        content: None,
+        tool_call: None,
+    }
+}
+
 // grcov-excl-start: real HTTP transport requires integration tests or an injected client seam
 #[async_trait]
 impl LlmClient for AnthropicClient {
@@ -194,37 +233,7 @@ impl LlmClient for AnthropicClient {
             .await
             .context("parsing Anthropic response")?;
 
-        // Walk blocks in order: collect any text before a tool_use so reasoning
-        // is preserved alongside the call in a single LlmResponse.
-        let mut reasoning: Option<String> = None;
-        for block in &resp.content {
-            match block {
-                ContentBlock::Text { text } => {
-                    reasoning = Some(text.clone());
-                }
-                ContentBlock::ToolUse { id, name, input } => {
-                    return Ok(LlmResponse {
-                        content: reasoning,
-                        tool_call: Some(ToolCall {
-                            id: id.clone(),
-                            name: name.clone(),
-                            arguments: input.clone(),
-                        }),
-                    });
-                }
-                ContentBlock::Unknown => {}
-            }
-        }
-
-        // No tool call found — fall back to text content.
-        if let Some(text) = reasoning {
-            return Ok(LlmResponse::text(text));
-        }
-
-        Ok(LlmResponse {
-            content: None,
-            tool_call: None,
-        })
+        Ok(parse_blocks(&resp.content))
     }
 }
 // grcov-excl-stop
@@ -346,44 +355,17 @@ mod tests {
 
     #[test]
     fn complete_text_then_tool_use_returns_reasoning_with_tool_call() {
-        // Simulate a multi-block response: text block followed by tool_use.
-        let resp = MessagesResponse {
-            content: vec![
-                ContentBlock::Text {
-                    text: "Let me check that file.".to_string(),
-                },
-                ContentBlock::ToolUse {
-                    id: "toolu_01".to_string(),
-                    name: "read".to_string(),
-                    input: serde_json::json!({"file_path": "/tmp/a.txt"}),
-                },
-            ],
-        };
-
-        // Exercise the parsing logic directly (mirrors what complete() does).
-        let mut reasoning: Option<String> = None;
-        let mut result: Option<LlmResponse> = None;
-        for block in &resp.content {
-            match block {
-                ContentBlock::Text { text } => {
-                    reasoning = Some(text.clone());
-                }
-                ContentBlock::ToolUse { id, name, input } => {
-                    result = Some(LlmResponse {
-                        content: reasoning.clone(),
-                        tool_call: Some(ToolCall {
-                            id: id.clone(),
-                            name: name.clone(),
-                            arguments: input.clone(),
-                        }),
-                    });
-                    break;
-                }
-                ContentBlock::Unknown => {}
-            }
-        }
-
-        let r = result.unwrap();
+        let blocks = vec![
+            ContentBlock::Text {
+                text: "Let me check that file.".to_string(),
+            },
+            ContentBlock::ToolUse {
+                id: "toolu_01".to_string(),
+                name: "read".to_string(),
+                input: serde_json::json!({"file_path": "/tmp/a.txt"}),
+            },
+        ];
+        let r = parse_blocks(&blocks);
         assert_eq!(r.content.as_deref(), Some("Let me check that file."));
         let tc = r.tool_call.unwrap();
         assert_eq!(tc.id, "toolu_01");
@@ -392,39 +374,36 @@ mod tests {
 
     #[test]
     fn complete_tool_use_only_returns_no_reasoning() {
-        // Tool-use block with no preceding text — reasoning should be None.
-        let resp = MessagesResponse {
-            content: vec![ContentBlock::ToolUse {
-                id: "toolu_02".to_string(),
+        let blocks = vec![ContentBlock::ToolUse {
+            id: "toolu_02".to_string(),
+            name: "read".to_string(),
+            input: serde_json::json!({}),
+        }];
+        let r = parse_blocks(&blocks);
+        assert!(r.content.is_none());
+        assert!(r.tool_call.is_some());
+    }
+
+    #[test]
+    fn multiple_text_blocks_are_concatenated_as_reasoning() {
+        let blocks = vec![
+            ContentBlock::Text {
+                text: "First thought.".to_string(),
+            },
+            ContentBlock::Text {
+                text: "Second thought.".to_string(),
+            },
+            ContentBlock::ToolUse {
+                id: "toolu_03".to_string(),
                 name: "read".to_string(),
                 input: serde_json::json!({}),
-            }],
-        };
-
-        let mut reasoning: Option<String> = None;
-        let mut result: Option<LlmResponse> = None;
-        for block in &resp.content {
-            match block {
-                ContentBlock::Text { text } => {
-                    reasoning = Some(text.clone());
-                }
-                ContentBlock::ToolUse { id, name, input } => {
-                    result = Some(LlmResponse {
-                        content: reasoning.clone(),
-                        tool_call: Some(ToolCall {
-                            id: id.clone(),
-                            name: name.clone(),
-                            arguments: input.clone(),
-                        }),
-                    });
-                    break;
-                }
-                ContentBlock::Unknown => {}
-            }
-        }
-
-        let r = result.unwrap();
-        assert!(r.content.is_none());
+            },
+        ];
+        let r = parse_blocks(&blocks);
+        assert_eq!(
+            r.content.as_deref(),
+            Some("First thought.\nSecond thought.")
+        );
         assert!(r.tool_call.is_some());
     }
 }

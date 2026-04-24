@@ -153,6 +153,11 @@ impl<'a> AgentRunner<'a> {
             }
 
             if let Some(ref text) = response.content {
+                // Emit a Decision trace for reasoning text regardless of whether a
+                // tool call follows — reasoning is always worth tracing. When a tool
+                // call is present the text is *not* added to memory here; instead it
+                // is stored inside the ToolCall entry below so both are replayed as a
+                // single assistant message (required by Anthropic and OpenAI).
                 self.tracer
                     .emit(&self.config.id, step, EventKind::Decision, text)?;
                 // Only store a standalone text entry when there is no tool call.

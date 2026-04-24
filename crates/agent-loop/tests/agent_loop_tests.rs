@@ -236,6 +236,27 @@ async fn tool_call_without_reasoning_stores_no_reasoning() {
     tr.close().await.unwrap();
 }
 
+#[tokio::test]
+async fn standalone_text_response_stored_as_text_memory_entry() {
+    // Regression: response.content = Some(...) with no tool call must create a
+    // standalone Text entry in memory. The `if response.tool_call.is_none()`
+    // guard in the agent loop is the only thing keeping this path working.
+    let llm = StubClient::new(vec![LlmResponse::text("Just a text answer.")]);
+    let tools = ToolRegistry::new();
+    let (_tmp, tr) = tracer();
+
+    let result = AgentRunner::new(&cfg(5), &llm, &tools, &tr, ToolSchemaFormat::OpenAi)
+        .run("task")
+        .await
+        .unwrap();
+
+    // user task + assistant text answer = 2 entries
+    assert_eq!(result.memory.len(), 2);
+    let entry = &result.memory.entries()[1];
+    assert!(matches!(&entry.content, EntryContent::Text { text } if text == "Just a text answer."));
+    tr.close().await.unwrap();
+}
+
 #[test]
 fn agent_config_serde_round_trip() {
     use yaai_agent_loop::AgentResult;
