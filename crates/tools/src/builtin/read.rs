@@ -253,7 +253,6 @@ fn is_binary(sample: &[u8]) -> bool {
     sample.contains(&0u8)
 }
 
-// grcov-excl-start: exclude inline unit tests from production coverage
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -554,4 +553,3 @@ mod tests {
         assert!(content.contains("2: second line"));
     }
 }
-// grcov-excl-stop
