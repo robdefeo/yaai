@@ -403,4 +403,39 @@ mod tests {
         );
         assert!(r.tool_call.is_some());
     }
+
+    #[test]
+    fn unknown_block_alone_returns_empty_response() {
+        let r = parse_blocks(&[ContentBlock::Unknown]);
+        assert!(r.content.is_none());
+        assert!(r.tool_call.is_none());
+    }
+
+    #[test]
+    fn unknown_block_mixed_with_text_is_skipped() {
+        let blocks = vec![
+            ContentBlock::Text {
+                text: "thought".to_string(),
+            },
+            ContentBlock::Unknown,
+        ];
+        let r = parse_blocks(&blocks);
+        assert_eq!(r.content.as_deref(), Some("thought"));
+        assert!(r.tool_call.is_none());
+    }
+
+    #[test]
+    fn unknown_block_before_tool_use_is_skipped() {
+        let blocks = vec![
+            ContentBlock::Unknown,
+            ContentBlock::ToolUse {
+                id: "toolu_01".to_string(),
+                name: "read".to_string(),
+                input: serde_json::json!({}),
+            },
+        ];
+        let r = parse_blocks(&blocks);
+        assert!(r.content.is_none());
+        assert!(r.tool_call.is_some());
+    }
 }

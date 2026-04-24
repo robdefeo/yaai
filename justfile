@@ -38,8 +38,8 @@ dev:
 coverage:
   mkdir -p coverage
   cargo llvm-cov --workspace --no-report
-  cargo llvm-cov report --lcov --output-path coverage/lcov
-  cargo llvm-cov report --html --output-dir coverage
+  cargo llvm-cov report --lcov --output-path coverage/lcov --ignore-filename-regex 'apps/cli/src/main\.rs'
+  cargo llvm-cov report --html --output-dir coverage --ignore-filename-regex 'apps/cli/src/main\.rs'
   printf "\n  %-50s  %8s  %-10s  %9s  %-10s\n" "File" "Lines" "(hit/tot)" "Functions" "(hit/tot)"
   printf "  %-50s  %8s  %-10s  %9s  %-10s\n" "--------------------------------------------------" "--------" "----------" "---------" "----------"
   awk -F: '\
