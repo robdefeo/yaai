@@ -10,6 +10,16 @@
     "commands": {
       "lint": {
         "run": "just lint"
+      },
+      "test": {
+        "run": "just test"
+      }
+    }
+  },
+  "pre-push": {
+    "commands": {
+      "coverage-check": {
+        "run": "just coverage"
       }
     }
   }
