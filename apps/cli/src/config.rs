@@ -70,7 +70,11 @@ pub fn load() -> Result<YaaiConfig> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::Mutex;
     use tempfile::tempdir;
+
+    // Serialize tests that mutate HOME so they don't race each other.
+    static HOME_LOCK: Mutex<()> = Mutex::new(());
 
     fn build_config(json: &str) -> Result<YaaiConfig> {
         let dir = tempdir().unwrap();
@@ -138,6 +142,7 @@ mod tests {
 
     #[test]
     fn load_reads_existing_config_file() {
+        let _guard = HOME_LOCK.lock().unwrap();
         let dir = tempdir().unwrap();
         unsafe {
             std::env::set_var("HOME", dir.path());
@@ -154,6 +159,7 @@ mod tests {
 
     #[test]
     fn load_returns_default_when_config_file_absent() {
+        let _guard = HOME_LOCK.lock().unwrap();
         let dir = tempdir().unwrap();
         // Point HOME (and XDG_CONFIG_HOME) at an empty temp dir so no config file exists.
         unsafe {
