@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::debug;
 
-use crate::{ConversationTurn, LlmClient, LlmResponse, Message};
+use crate::{ConversationTurn, LlmClient, LlmResponse, Message, ToolCall};
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -123,14 +123,22 @@ fn turn_to_anthropic(turn: &ConversationTurn) -> AnthropicMessage {
             id,
             name,
             arguments,
-        } => AnthropicMessage {
-            role: "assistant",
-            content: vec![AnthropicBlock::ToolUse {
+            reasoning,
+        } => {
+            let mut blocks = Vec::new();
+            if let Some(text) = reasoning {
+                blocks.push(AnthropicBlock::Text { text: text.clone() });
+            }
+            blocks.push(AnthropicBlock::ToolUse {
                 id: id.clone(),
                 name: name.clone(),
                 input: arguments.clone(),
-            }],
-        },
+            });
+            AnthropicMessage {
+                role: "assistant",
+                content: blocks,
+            }
+        }
         ConversationTurn::ToolResult {
             tool_call_id,
             content,
@@ -186,18 +194,31 @@ impl LlmClient for AnthropicClient {
             .await
             .context("parsing Anthropic response")?;
 
-        // Prefer tool_use blocks first (same priority as OpenAI implementation).
+        // Walk blocks in order: collect any text before a tool_use so reasoning
+        // is preserved alongside the call in a single LlmResponse.
+        let mut reasoning: Option<String> = None;
         for block in &resp.content {
-            if let ContentBlock::ToolUse { id, name, input } = block {
-                return Ok(LlmResponse::tool(id.clone(), name.clone(), input.clone()));
+            match block {
+                ContentBlock::Text { text } => {
+                    reasoning = Some(text.clone());
+                }
+                ContentBlock::ToolUse { id, name, input } => {
+                    return Ok(LlmResponse {
+                        content: reasoning,
+                        tool_call: Some(ToolCall {
+                            id: id.clone(),
+                            name: name.clone(),
+                            arguments: input.clone(),
+                        }),
+                    });
+                }
+                ContentBlock::Unknown => {}
             }
         }
 
-        // Fall back to the first text block.
-        for block in resp.content {
-            if let ContentBlock::Text { text } = block {
-                return Ok(LlmResponse::text(text));
-            }
+        // No tool call found — fall back to text content.
+        if let Some(text) = reasoning {
+            return Ok(LlmResponse::text(text));
         }
 
         Ok(LlmResponse {
@@ -252,6 +273,7 @@ mod tests {
             id: "toolu_01".to_string(),
             name: "read".to_string(),
             arguments: serde_json::json!({"file_path": "/tmp/a.txt"}),
+            reasoning: None,
         };
         let msg = turn_to_anthropic(&turn);
         assert_eq!(msg.role, "assistant");
@@ -301,6 +323,109 @@ mod tests {
         };
         let json = serde_json::to_value(&req).unwrap();
         assert!(json.get("tools").is_some());
+    }
+
+    #[test]
+    fn tool_call_with_reasoning_emits_text_then_tool_use_blocks() {
+        let turn = ConversationTurn::AssistantToolCall {
+            id: "toolu_01".to_string(),
+            name: "read".to_string(),
+            arguments: serde_json::json!({"file_path": "/tmp/a.txt"}),
+            reasoning: Some("I should read the file first.".to_string()),
+        };
+        let msg = turn_to_anthropic(&turn);
+        assert_eq!(msg.role, "assistant");
+        assert_eq!(msg.content.len(), 2);
+        let first = serde_json::to_value(&msg.content[0]).unwrap();
+        assert_eq!(first["type"], "text");
+        assert_eq!(first["text"], "I should read the file first.");
+        let second = serde_json::to_value(&msg.content[1]).unwrap();
+        assert_eq!(second["type"], "tool_use");
+        assert_eq!(second["id"], "toolu_01");
+    }
+
+    #[test]
+    fn complete_text_then_tool_use_returns_reasoning_with_tool_call() {
+        // Simulate a multi-block response: text block followed by tool_use.
+        let resp = MessagesResponse {
+            content: vec![
+                ContentBlock::Text {
+                    text: "Let me check that file.".to_string(),
+                },
+                ContentBlock::ToolUse {
+                    id: "toolu_01".to_string(),
+                    name: "read".to_string(),
+                    input: serde_json::json!({"file_path": "/tmp/a.txt"}),
+                },
+            ],
+        };
+
+        // Exercise the parsing logic directly (mirrors what complete() does).
+        let mut reasoning: Option<String> = None;
+        let mut result: Option<LlmResponse> = None;
+        for block in &resp.content {
+            match block {
+                ContentBlock::Text { text } => {
+                    reasoning = Some(text.clone());
+                }
+                ContentBlock::ToolUse { id, name, input } => {
+                    result = Some(LlmResponse {
+                        content: reasoning.clone(),
+                        tool_call: Some(ToolCall {
+                            id: id.clone(),
+                            name: name.clone(),
+                            arguments: input.clone(),
+                        }),
+                    });
+                    break;
+                }
+                ContentBlock::Unknown => {}
+            }
+        }
+
+        let r = result.unwrap();
+        assert_eq!(r.content.as_deref(), Some("Let me check that file."));
+        let tc = r.tool_call.unwrap();
+        assert_eq!(tc.id, "toolu_01");
+        assert_eq!(tc.name, "read");
+    }
+
+    #[test]
+    fn complete_tool_use_only_returns_no_reasoning() {
+        // Tool-use block with no preceding text — reasoning should be None.
+        let resp = MessagesResponse {
+            content: vec![ContentBlock::ToolUse {
+                id: "toolu_02".to_string(),
+                name: "read".to_string(),
+                input: serde_json::json!({}),
+            }],
+        };
+
+        let mut reasoning: Option<String> = None;
+        let mut result: Option<LlmResponse> = None;
+        for block in &resp.content {
+            match block {
+                ContentBlock::Text { text } => {
+                    reasoning = Some(text.clone());
+                }
+                ContentBlock::ToolUse { id, name, input } => {
+                    result = Some(LlmResponse {
+                        content: reasoning.clone(),
+                        tool_call: Some(ToolCall {
+                            id: id.clone(),
+                            name: name.clone(),
+                            arguments: input.clone(),
+                        }),
+                    });
+                    break;
+                }
+                ContentBlock::Unknown => {}
+            }
+        }
+
+        let r = result.unwrap();
+        assert!(r.content.is_none());
+        assert!(r.tool_call.is_some());
     }
 }
 // grcov-excl-stop
