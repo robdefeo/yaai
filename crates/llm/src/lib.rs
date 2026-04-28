@@ -7,6 +7,7 @@
 
 pub mod anthropic;
 pub mod openai;
+mod sse;
 pub mod stub;
 
 use anyhow::Result;
