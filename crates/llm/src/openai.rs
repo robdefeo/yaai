@@ -7,7 +7,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use crate::{ConversationTurn, LlmClient, LlmResponse, Message, ToolCall};
+use crate::{sse::pop_sse_line, ConversationTurn, LlmClient, LlmResponse, Message, ToolCall};
 
 const OPENAI_CHAT_COMPLETIONS_URL: &str = "https://api.openai.com/v1/chat/completions";
 
@@ -203,24 +203,6 @@ fn turn_to_oai(turn: &ConversationTurn) -> OaiMessage {
             tool_call_id: Some(tool_call_id.clone()),
         },
     }
-}
-
-fn pop_sse_line(buf: &mut Vec<u8>) -> Result<Option<String>> {
-    let Some(pos) = buf.iter().position(|byte| *byte == b'\n') else {
-        return Ok(None);
-    };
-
-    let mut line: Vec<u8> = buf.drain(..=pos).collect();
-    if line.last() == Some(&b'\n') {
-        line.pop();
-    }
-    if line.last() == Some(&b'\r') {
-        line.pop();
-    }
-
-    String::from_utf8(line)
-        .context("decoding SSE line from OpenAI stream")
-        .map(Some)
 }
 
 fn apply_stream_data(
@@ -512,23 +494,6 @@ mod tests {
         };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["stream"], true);
-    }
-
-    #[test]
-    fn sse_line_buffer_preserves_utf8_split_across_chunks() {
-        let line = "data: {\"choices\":[{\"delta\":{\"content\":\"hello 😀\"}}]}\n";
-        let split = line.find('😀').unwrap() + 1;
-        let bytes = line.as_bytes();
-        let mut buf = Vec::new();
-
-        buf.extend_from_slice(&bytes[..split]);
-        assert_eq!(pop_sse_line(&mut buf).unwrap(), None);
-
-        buf.extend_from_slice(&bytes[split..]);
-        assert_eq!(
-            pop_sse_line(&mut buf).unwrap().as_deref(),
-            Some(line.trim_end_matches('\n'))
-        );
     }
 
     #[test]

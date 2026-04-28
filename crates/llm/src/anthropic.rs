@@ -7,7 +7,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use crate::{ConversationTurn, LlmClient, LlmResponse, Message, ToolCall};
+use crate::{sse::pop_sse_line, ConversationTurn, LlmClient, LlmResponse, Message, ToolCall};
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -249,24 +249,6 @@ fn parse_blocks(blocks: &[ContentBlock]) -> LlmResponse {
     }
 }
 
-fn pop_sse_line(buf: &mut Vec<u8>) -> Result<Option<String>> {
-    let Some(pos) = buf.iter().position(|byte| *byte == b'\n') else {
-        return Ok(None);
-    };
-
-    let mut line: Vec<u8> = buf.drain(..=pos).collect();
-    if line.last() == Some(&b'\n') {
-        line.pop();
-    }
-    if line.last() == Some(&b'\r') {
-        line.pop();
-    }
-
-    String::from_utf8(line)
-        .context("decoding SSE line from Anthropic stream")
-        .map(Some)
-}
-
 #[async_trait]
 impl LlmClient for AnthropicClient {
     async fn complete(
@@ -504,23 +486,6 @@ mod tests {
         };
         let json = serde_json::to_value(&req).unwrap();
         assert!(json.get("tools").is_some());
-    }
-
-    #[test]
-    fn sse_line_buffer_preserves_utf8_split_across_chunks() {
-        let line = "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi 😀\"}}\n";
-        let split = line.find('😀').unwrap() + 1;
-        let bytes = line.as_bytes();
-        let mut buf = Vec::new();
-
-        buf.extend_from_slice(&bytes[..split]);
-        assert_eq!(pop_sse_line(&mut buf).unwrap(), None);
-
-        buf.extend_from_slice(&bytes[split..]);
-        assert_eq!(
-            pop_sse_line(&mut buf).unwrap().as_deref(),
-            Some(line.trim_end_matches('\n'))
-        );
     }
 
     #[test]
