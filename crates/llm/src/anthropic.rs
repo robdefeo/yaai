@@ -4,6 +4,7 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::sync::mpsc;
 use tracing::debug;
 
 use crate::{ConversationTurn, LlmClient, LlmResponse, Message, ToolCall};
@@ -58,6 +59,8 @@ struct MessagesRequest<'a> {
     messages: Vec<AnthropicMessage>,
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
     tools: &'a [Value],
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    stream: bool,
 }
 
 /// A single message in the Anthropic wire format. Content is always a list of
@@ -103,6 +106,61 @@ enum ContentBlock {
     },
     #[serde(other)]
     Unknown,
+}
+
+// ── Streaming SSE event types ────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum StreamEvent {
+    ContentBlockStart {
+        #[allow(dead_code)]
+        index: usize,
+        content_block: StreamBlock,
+    },
+    ContentBlockDelta {
+        #[allow(dead_code)]
+        index: usize,
+        delta: StreamDelta,
+    },
+    Error {
+        error: StreamApiError,
+    },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum StreamBlock {
+    Text {
+        #[allow(dead_code)]
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+    },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum StreamDelta {
+    TextDelta {
+        text: String,
+    },
+    InputJsonDelta {
+        partial_json: String,
+    },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Deserialize)]
+struct StreamApiError {
+    message: String,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -191,6 +249,24 @@ fn parse_blocks(blocks: &[ContentBlock]) -> LlmResponse {
     }
 }
 
+fn pop_sse_line(buf: &mut Vec<u8>) -> Result<Option<String>> {
+    let Some(pos) = buf.iter().position(|byte| *byte == b'\n') else {
+        return Ok(None);
+    };
+
+    let mut line: Vec<u8> = buf.drain(..=pos).collect();
+    if line.last() == Some(&b'\n') {
+        line.pop();
+    }
+    if line.last() == Some(&b'\r') {
+        line.pop();
+    }
+
+    String::from_utf8(line)
+        .context("decoding SSE line from Anthropic stream")
+        .map(Some)
+}
+
 #[async_trait]
 impl LlmClient for AnthropicClient {
     async fn complete(
@@ -209,6 +285,7 @@ impl LlmClient for AnthropicClient {
             system,
             messages,
             tools,
+            stream: false,
         };
 
         let response = self
@@ -233,6 +310,102 @@ impl LlmClient for AnthropicClient {
             .context("parsing Anthropic response")?;
 
         Ok(parse_blocks(&resp.content))
+    }
+
+    async fn complete_streaming(
+        &self,
+        system: Option<&str>,
+        turns: &[ConversationTurn],
+        tools: &[Value],
+        tx: &mpsc::UnboundedSender<String>,
+    ) -> Result<LlmResponse> {
+        debug!(model = %self.model, turns = turns.len(), "calling Anthropic (streaming)");
+
+        let messages: Vec<AnthropicMessage> = turns.iter().map(turn_to_anthropic).collect();
+
+        let body = MessagesRequest {
+            model: &self.model,
+            max_tokens: DEFAULT_MAX_TOKENS,
+            system,
+            messages,
+            tools,
+            stream: true,
+        };
+
+        let mut response = self
+            .client
+            .post(ANTHROPIC_API_URL)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .json(&body)
+            .send()
+            .await
+            .context("sending streaming request to Anthropic")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            bail!("Anthropic API error ({}): {}", status, body);
+        }
+
+        let mut buf = Vec::new();
+        let mut text = String::new();
+        let mut tool_id: Option<String> = None;
+        let mut tool_name: Option<String> = None;
+        let mut tool_json = String::new();
+
+        while let Some(chunk) = response.chunk().await.context("reading SSE stream")? {
+            buf.extend_from_slice(&chunk);
+
+            while let Some(line) = pop_sse_line(&mut buf)? {
+                let Some(data) = line.strip_prefix("data: ") else {
+                    continue;
+                };
+
+                match serde_json::from_str::<StreamEvent>(data) {
+                    Ok(StreamEvent::ContentBlockStart { content_block, .. }) => {
+                        if let StreamBlock::ToolUse { id, name } = content_block {
+                            tool_id = Some(id);
+                            tool_name = Some(name);
+                        }
+                    }
+                    Ok(StreamEvent::ContentBlockDelta { delta, .. }) => match delta {
+                        StreamDelta::TextDelta { text: t } => {
+                            let _ = tx.send(t.clone());
+                            text.push_str(&t);
+                        }
+                        StreamDelta::InputJsonDelta { partial_json } => {
+                            tool_json.push_str(&partial_json);
+                        }
+                        StreamDelta::Other => {}
+                    },
+                    Ok(StreamEvent::Error { error }) => {
+                        bail!("Anthropic stream error: {}", error.message);
+                    }
+                    Ok(StreamEvent::Other) | Err(_) => {}
+                }
+            }
+        }
+
+        let tool_call = match (tool_id, tool_name) {
+            (Some(id), Some(name)) => {
+                let arguments = if tool_json.is_empty() {
+                    serde_json::json!({})
+                } else {
+                    serde_json::from_str(&tool_json).context("parsing tool input JSON")?
+                };
+                Some(ToolCall {
+                    id,
+                    name,
+                    arguments,
+                })
+            }
+            _ => None,
+        };
+
+        let content = if text.is_empty() { None } else { Some(text) };
+
+        Ok(LlmResponse { content, tool_call })
     }
 }
 
@@ -312,6 +485,7 @@ mod tests {
             system: None,
             messages: vec![],
             tools: &[],
+            stream: false,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert!(json.get("tools").is_none(), "empty tools must be omitted");
@@ -326,9 +500,27 @@ mod tests {
             system: None,
             messages: vec![],
             tools: &tools,
+            stream: false,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert!(json.get("tools").is_some());
+    }
+
+    #[test]
+    fn sse_line_buffer_preserves_utf8_split_across_chunks() {
+        let line = "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi 😀\"}}\n";
+        let split = line.find('😀').unwrap() + 1;
+        let bytes = line.as_bytes();
+        let mut buf = Vec::new();
+
+        buf.extend_from_slice(&bytes[..split]);
+        assert_eq!(pop_sse_line(&mut buf).unwrap(), None);
+
+        buf.extend_from_slice(&bytes[split..]);
+        assert_eq!(
+            pop_sse_line(&mut buf).unwrap().as_deref(),
+            Some(line.trim_end_matches('\n'))
+        );
     }
 
     #[test]

@@ -13,6 +13,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::sync::mpsc;
 
 /// Build a [`reqwest::Client`] with sensible defaults: 10 s connect timeout,
 /// 120 s overall request timeout.
@@ -136,6 +137,23 @@ pub trait LlmClient: Send + Sync {
         turns: &[ConversationTurn],
         tools: &[Value],
     ) -> Result<LlmResponse>;
+
+    /// Stream token deltas to `tx` as they arrive, returning the full response
+    /// once complete. The default implementation calls [`complete`] and emits
+    /// the entire content as a single token.
+    async fn complete_streaming(
+        &self,
+        system: Option<&str>,
+        turns: &[ConversationTurn],
+        tools: &[Value],
+        tx: &mpsc::UnboundedSender<String>,
+    ) -> Result<LlmResponse> {
+        let response = self.complete(system, turns, tools).await?;
+        if let Some(ref text) = response.content {
+            let _ = tx.send(text.clone());
+        }
+        Ok(response)
+    }
 }
 
 #[async_trait]
@@ -147,5 +165,15 @@ impl LlmClient for Box<dyn LlmClient> {
         tools: &[Value],
     ) -> Result<LlmResponse> {
         (**self).complete(system, turns, tools).await
+    }
+
+    async fn complete_streaming(
+        &self,
+        system: Option<&str>,
+        turns: &[ConversationTurn],
+        tools: &[Value],
+        tx: &mpsc::UnboundedSender<String>,
+    ) -> Result<LlmResponse> {
+        (**self).complete_streaming(system, turns, tools, tx).await
     }
 }

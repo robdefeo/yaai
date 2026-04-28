@@ -5,6 +5,7 @@
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 use tracing::{info, warn};
 use uuid::Uuid;
 use yaai_llm::{ConversationTurn, LlmClient, Message};
@@ -46,6 +47,7 @@ pub struct AgentRunner<'a> {
     tracer: &'a Tracer,
     memory: SessionMemory,
     tool_format: ToolSchemaFormat,
+    token_tx: Option<mpsc::UnboundedSender<String>>,
 }
 
 impl<'a> AgentRunner<'a> {
@@ -63,6 +65,16 @@ impl<'a> AgentRunner<'a> {
             tracer,
             memory: SessionMemory::new(),
             tool_format,
+            token_tx: None,
+        }
+    }
+
+    /// Enable token streaming. Text deltas are sent to `tx` as they arrive
+    /// from the LLM; the full [`LlmResponse`] is still returned as normal.
+    pub fn with_streaming(self, tx: mpsc::UnboundedSender<String>) -> Self {
+        Self {
+            token_tx: Some(tx),
+            ..self
         }
     }
 
@@ -132,10 +144,23 @@ impl<'a> AgentRunner<'a> {
                 serde_json::json!({ "turn_count": turns.len() }),
             )?;
 
-            let response = self
-                .llm
-                .complete(Some(&self.config.system_prompt), &turns, &tool_descriptors)
-                .await?;
+            let response = match self.token_tx.as_ref() {
+                Some(tx) => {
+                    self.llm
+                        .complete_streaming(
+                            Some(&self.config.system_prompt),
+                            &turns,
+                            &tool_descriptors,
+                            tx,
+                        )
+                        .await?
+                }
+                None => {
+                    self.llm
+                        .complete(Some(&self.config.system_prompt), &turns, &tool_descriptors)
+                        .await?
+                }
+            };
 
             if response.content.is_none() && response.tool_call.is_none() {
                 let msg = format!(

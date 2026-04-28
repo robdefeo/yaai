@@ -28,6 +28,7 @@ pub(crate) struct TuiApp {
     pub(crate) session_memory: SessionMemory,
     result_rx: mpsc::UnboundedReceiver<RunResult>,
     result_tx: mpsc::UnboundedSender<RunResult>,
+    token_rx: mpsc::UnboundedReceiver<String>,
     active_task: Option<tokio::task::JoinHandle<()>>,
     /// `usize::MAX` means "pinned to bottom — auto-follow new content".
     scroll_offset: usize,
@@ -38,6 +39,7 @@ pub(crate) struct TuiApp {
 impl TuiApp {
     pub(crate) fn new(run_args: ResolvedRunArgs) -> Self {
         let (result_tx, result_rx) = mpsc::unbounded_channel();
+        let (_dummy_token_tx, token_rx) = mpsc::unbounded_channel::<String>();
 
         Self {
             state: AppState::default(),
@@ -46,6 +48,7 @@ impl TuiApp {
             session_memory: SessionMemory::new(),
             result_rx,
             result_tx,
+            token_rx,
             active_task: None,
             scroll_offset: usize::MAX,
             last_max_scroll: 0,
@@ -76,6 +79,11 @@ impl TuiApp {
     async fn event_loop(&mut self, terminal: &mut AppTerminal) -> Result<()> {
         let mut dirty = true;
         loop {
+            while let Ok(token) = self.token_rx.try_recv() {
+                self.state.append_token(token);
+                dirty = true;
+            }
+
             while let Ok(result) = self.result_rx.try_recv() {
                 self.process_run_result(result);
                 dirty = true;
@@ -86,7 +94,10 @@ impl TuiApp {
                 dirty = false;
             }
 
-            if event::poll(Duration::from_millis(50))? {
+            let has_event =
+                tokio::task::spawn_blocking(|| event::poll(Duration::from_millis(50))).await??;
+
+            if has_event {
                 let evt = event::read()?;
                 if self.handle_event(evt).await? {
                     return Ok(());
@@ -155,8 +166,10 @@ impl TuiApp {
             old.abort();
         }
         while self.result_rx.try_recv().is_ok() {}
+        let (token_tx, token_rx) = mpsc::unbounded_channel::<String>();
+        self.token_rx = token_rx;
         let handle = tokio::spawn(async move {
-            let result = run_prompt(&input, &run_args, memory_snapshot)
+            let result = run_prompt(&input, &run_args, memory_snapshot, Some(token_tx))
                 .await
                 .map_err(|e| e.to_string());
             let _ = tx.send(result);
