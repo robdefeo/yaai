@@ -182,8 +182,10 @@ impl AppState {
             // Render committed lines (newline-terminated, stable).
             let mut first_streaming_line = true;
             for sub in committed.split('\n') {
-                // split('\n') on "a\nb\n" → ["a", "b", ""] — skip the trailing empty
-                if sub.is_empty() && !first_streaming_line {
+                // split('\n') on "a\nb\n" → ["a", "b", ""] — skip all empty segments,
+                // including the sole "" produced by splitting an empty committed string
+                // before any newline has arrived.
+                if sub.is_empty() {
                     continue;
                 }
                 if first_streaming_line {
