@@ -24,11 +24,50 @@ pub(crate) enum RunState {
     Running,
 }
 
+/// Newline-gated streaming buffer — mirrors the `MarkdownStreamCollector` pattern from codex.
+///
+/// Raw token deltas accumulate in `raw`. `committed_end` tracks the byte offset after the last
+/// `\n` in `raw`: everything before that offset is "committed" (safe to render as complete lines).
+/// The slice from `committed_end` to the end is the partial current line shown with a cursor.
+/// On finalisation the pending slice is flushed even without a trailing newline.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct StreamingBuffer {
+    raw: String,
+    committed_end: usize,
+}
+
+impl StreamingBuffer {
+    fn push(&mut self, token: &str) {
+        self.raw.push_str(token);
+        // Advance committed_end to after the last newline in the buffer.
+        if token.contains('\n') {
+            if let Some(idx) = self.raw.rfind('\n') {
+                self.committed_end = idx + 1;
+            }
+        }
+    }
+
+    fn committed(&self) -> &str {
+        &self.raw[..self.committed_end]
+    }
+
+    fn pending(&self) -> &str {
+        &self.raw[self.committed_end..]
+    }
+
+    fn clear(&mut self) {
+        self.raw.clear();
+        self.committed_end = 0;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AppState {
     pub(crate) transcript: Vec<TranscriptEntry>,
     pub(crate) status: String,
     pub(crate) run_state: RunState,
+    streaming: StreamingBuffer,
+    streaming_active: bool,
 }
 
 impl Default for AppState {
@@ -37,6 +76,8 @@ impl Default for AppState {
             transcript: Vec::new(),
             status: "Ready. Enter submits, Shift+Enter adds a newline, PageUp/PageDown scrolls, Ctrl+C exits.".to_string(),
             run_state: RunState::Idle,
+            streaming: StreamingBuffer::default(),
+            streaming_active: false,
         }
     }
 }
@@ -53,9 +94,23 @@ impl AppState {
         });
         self.status = "Running agent...".to_string();
         self.run_state = RunState::Running;
+        self.streaming.clear();
+        self.streaming_active = true;
+    }
+
+    /// Push a raw token delta into the newline-gated buffer.
+    ///
+    /// Tokens accumulate in `streaming.raw`. `committed_end` advances only when a `\n`
+    /// arrives, so partial lines are held back and never rendered mid-character — matching
+    /// the codex `MarkdownStreamCollector` contract.  The partial current line is always
+    /// shown with a `▊` cursor so the user sees progress within a line too.
+    pub(crate) fn append_token(&mut self, token: String) {
+        self.streaming.push(&token);
     }
 
     pub(crate) fn complete_run(&mut self, result: Result<PromptRunResult, String>) {
+        self.streaming.clear();
+        self.streaming_active = false;
         match result {
             Ok(result) => {
                 self.transcript.push(TranscriptEntry {
@@ -83,7 +138,7 @@ impl AppState {
     }
 
     pub(crate) fn transcript_text(&self) -> Text<'static> {
-        if self.transcript.is_empty() {
+        if self.transcript.is_empty() && !self.streaming_active {
             return Text::from(vec![Line::from(
                 "No messages yet. Type a prompt below to start a run.",
             )]);
@@ -113,6 +168,52 @@ impl AppState {
                 }
             }
             lines.push(Line::from(""));
+        }
+
+        // Streaming live tail — newline-gated, matching codex MarkdownStreamCollector semantics:
+        //
+        // Committed source (everything up to the last \n) is rendered as stable complete lines.
+        // The pending slice (partial current line) is rendered separately with a block cursor so
+        // the user sees in-line progress without exposing mid-line content as a completed row.
+        if self.streaming_active {
+            let committed = self.streaming.committed();
+            let pending = self.streaming.pending();
+
+            // Render committed lines (newline-terminated, stable).
+            let mut first_streaming_line = true;
+            for sub in committed.split('\n') {
+                // split('\n') on "a\nb\n" → ["a", "b", ""] — skip the trailing empty
+                if sub.is_empty() && !first_streaming_line {
+                    continue;
+                }
+                if first_streaming_line {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            "Assistant: ".to_string(),
+                            Style::default().add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw(sub.to_string()),
+                    ]));
+                    first_streaming_line = false;
+                } else {
+                    lines.push(Line::from(Span::raw(sub.to_string())));
+                }
+            }
+
+            // Render pending partial line with cursor.
+            let cursor_line = format!("{}▊", pending);
+            if first_streaming_line {
+                // Nothing committed yet — pending is the first visible line.
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        "Assistant: ".to_string(),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(cursor_line),
+                ]));
+            } else {
+                lines.push(Line::from(Span::raw(cursor_line)));
+            }
         }
 
         Text::from(lines)

@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use tokio::sync::mpsc;
 use uuid::Uuid;
 use yaai_agent_loop::{AgentConfig, AgentRunner};
 use yaai_llm::LlmClient;
@@ -28,6 +29,7 @@ pub async fn run_prompt(
     prompt: &str,
     args: &ResolvedRunArgs,
     initial_memory: SessionMemory,
+    token_tx: Option<mpsc::UnboundedSender<String>>,
 ) -> Result<(PromptRunResult, SessionMemory)> {
     let (provider, model) = parse_provider_model(&args.model)?;
     let llm = build_llm_client(&provider, &model)?;
@@ -35,7 +37,15 @@ pub async fn run_prompt(
         Provider::OpenAi => ToolSchemaFormat::OpenAi,
         Provider::Anthropic => ToolSchemaFormat::Anthropic,
     };
-    run_prompt_with_client(prompt, args, llm.as_ref(), initial_memory, tool_format).await
+    run_prompt_with_client(
+        prompt,
+        args,
+        llm.as_ref(),
+        initial_memory,
+        tool_format,
+        token_tx,
+    )
+    .await
 }
 
 pub fn build_tool_registry() -> ToolRegistry {
@@ -52,6 +62,7 @@ pub async fn run_prompt_with_client(
     llm: &dyn LlmClient,
     initial_memory: SessionMemory,
     tool_format: ToolSchemaFormat,
+    token_tx: Option<mpsc::UnboundedSender<String>>,
 ) -> Result<(PromptRunResult, SessionMemory)> {
     let tools = build_tool_registry();
 
@@ -70,10 +81,13 @@ pub async fn run_prompt_with_client(
     };
     let tracer = Tracer::new(Uuid::new_v4(), &args.traces_dir)?;
 
-    let agent_result = AgentRunner::new(&agent_config, llm, &tools, &tracer, tool_format)
-        .with_memory(initial_memory)
-        .run(prompt)
-        .await;
+    let runner = AgentRunner::new(&agent_config, llm, &tools, &tracer, tool_format)
+        .with_memory(initial_memory);
+    let runner = match token_tx {
+        Some(tx) => runner.with_streaming(tx),
+        None => runner,
+    };
+    let agent_result = runner.run(prompt).await;
 
     let close_result = tracer.close().await;
 
@@ -125,6 +139,7 @@ mod tests {
             &llm,
             SessionMemory::new(),
             ToolSchemaFormat::OpenAi,
+            None,
         )
         .await
         .unwrap();
@@ -148,6 +163,7 @@ mod tests {
             &llm,
             SessionMemory::new(),
             ToolSchemaFormat::OpenAi,
+            None,
         )
         .await
         .unwrap_err();
@@ -164,7 +180,7 @@ mod tests {
             model: "bogus/model".to_string(),
             traces_dir: tempdir().unwrap().path().display().to_string(),
         };
-        let err = run_prompt("hi", &args, SessionMemory::new())
+        let err = run_prompt("hi", &args, SessionMemory::new(), None)
             .await
             .unwrap_err();
         assert!(err.to_string().to_lowercase().contains("provider"));
