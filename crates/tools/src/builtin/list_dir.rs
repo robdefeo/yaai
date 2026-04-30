@@ -20,6 +20,8 @@ struct ListDirInput {
     limit: Option<u64>,
     /// 1-indexed entry number to start from, for pagination. Defaults to 1.
     offset: Option<u64>,
+    /// Whether to include hidden entries (names starting with '.'). Defaults to false.
+    include_hidden: Option<bool>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -106,6 +108,7 @@ impl Tool for ListDirTool {
         let max_depth = params.depth.unwrap_or(DEFAULT_DEPTH) as usize;
         let limit = params.limit.unwrap_or(DEFAULT_LIMIT) as usize;
         let offset = params.offset.unwrap_or(1) as usize;
+        let include_hidden = params.include_hidden.unwrap_or(false);
 
         if max_depth == 0 {
             return Err(ToolError::InvalidInput {
@@ -156,7 +159,7 @@ impl Tool for ListDirTool {
             });
         }
 
-        let all_entries = collect_entries(&canonical_target, max_depth).await;
+        let all_entries = collect_entries(&canonical_target, max_depth, include_hidden).await;
         let total = all_entries.len();
         let start = (offset - 1).min(total);
         let end = start.saturating_add(limit).min(total);
@@ -188,7 +191,7 @@ impl Tool for ListDirTool {
 /// BFS traversal of `root` up to `max_depth` levels deep.
 /// Skips unreadable entries and does not follow symlinks.
 /// Sorts children lexicographically at each level before enqueuing.
-async fn collect_entries(root: &Path, max_depth: usize) -> Vec<BfsEntry> {
+async fn collect_entries(root: &Path, max_depth: usize, include_hidden: bool) -> Vec<BfsEntry> {
     let mut entries = Vec::new();
     // queue: (directory path, depth of that directory, relative to root)
     // root itself is at depth 0; its children are at depth 1.
@@ -207,6 +210,9 @@ async fn collect_entries(root: &Path, max_depth: usize) -> Vec<BfsEntry> {
 
         while let Ok(Some(de)) = read_dir.next_entry().await {
             let name = de.file_name().to_string_lossy().into_owned();
+            if !include_hidden && name.starts_with('.') {
+                continue;
+            }
             let path = de.path();
             let meta = match tokio::fs::symlink_metadata(&path).await {
                 Ok(m) => m,
@@ -520,6 +526,56 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(ToolError::InvalidInput { .. })));
+    }
+
+    #[tokio::test]
+    async fn hides_dotfiles_by_default() {
+        let root = tempdir().unwrap();
+        tokio::fs::write(root.path().join(".hidden"), b"")
+            .await
+            .unwrap();
+        tokio::fs::write(root.path().join("visible.txt"), b"")
+            .await
+            .unwrap();
+
+        let tool = ListDirTool::with_working_dir(root.path());
+        let result = tool
+            .execute(json!({ "dir_path": root.path().to_str().unwrap() }))
+            .await
+            .unwrap();
+
+        let entries = result["entries"].as_str().unwrap();
+        assert!(entries.contains("visible.txt"));
+        assert!(
+            !entries.contains(".hidden"),
+            "hidden entries must be excluded by default"
+        );
+        assert_eq!(result["total"], 1);
+    }
+
+    #[tokio::test]
+    async fn shows_dotfiles_when_include_hidden_true() {
+        let root = tempdir().unwrap();
+        tokio::fs::write(root.path().join(".hidden"), b"")
+            .await
+            .unwrap();
+        tokio::fs::write(root.path().join("visible.txt"), b"")
+            .await
+            .unwrap();
+
+        let tool = ListDirTool::with_working_dir(root.path());
+        let result = tool
+            .execute(json!({
+                "dir_path": root.path().to_str().unwrap(),
+                "include_hidden": true
+            }))
+            .await
+            .unwrap();
+
+        let entries = result["entries"].as_str().unwrap();
+        assert!(entries.contains("visible.txt"));
+        assert!(entries.contains(".hidden"));
+        assert_eq!(result["total"], 2);
     }
 
     #[test]
