@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 const DEFAULT_DEPTH: u32 = 2;
 const DEFAULT_LIMIT: u64 = 25;
-const DEFAULT_OFFSET: u64 = 1;
+const MAX_BFS_ENTRIES: usize = 10_000;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ListDirInput {
@@ -103,10 +103,16 @@ impl Tool for ListDirTool {
                 reason: e.to_string(),
             })?;
 
-        let max_depth = params.depth.unwrap_or(DEFAULT_DEPTH).max(1) as usize;
+        let max_depth = params.depth.unwrap_or(DEFAULT_DEPTH) as usize;
         let limit = params.limit.unwrap_or(DEFAULT_LIMIT) as usize;
-        let offset = params.offset.unwrap_or(DEFAULT_OFFSET) as usize;
+        let offset = params.offset.unwrap_or(1) as usize;
 
+        if max_depth == 0 {
+            return Err(ToolError::InvalidInput {
+                name: self.name().to_string(),
+                reason: "depth must be >= 1".to_string(),
+            });
+        }
         if offset == 0 {
             return Err(ToolError::InvalidInput {
                 name: self.name().to_string(),
@@ -160,10 +166,10 @@ impl Tool for ListDirTool {
         let mut lines = vec![format!("{}/", canonical_target.display())];
         for entry in page {
             let indent = "  ".repeat(entry.depth);
-            let suffix = if entry.kind == EntryKind::Dir {
-                "/"
-            } else {
-                ""
+            let suffix = match entry.kind {
+                EntryKind::Dir => "/",
+                EntryKind::Symlink => "@",
+                EntryKind::File => "",
             };
             lines.push(format!("{}{}{}", indent, entry.name, suffix));
         }
@@ -223,6 +229,9 @@ async fn collect_entries(root: &Path, max_depth: usize) -> Vec<BfsEntry> {
                 kind,
                 depth: child_depth,
             });
+            if entries.len() >= MAX_BFS_ENTRIES {
+                return entries;
+            }
             if kind == EntryKind::Dir && child_depth < max_depth {
                 queue.push_back((path, child_depth));
             }
@@ -455,6 +464,39 @@ mod tests {
             }
             _ => panic!("expected ExecutionFailed for path outside working directory"),
         }
+    }
+
+    #[tokio::test]
+    async fn errors_on_zero_depth() {
+        let root = tempdir().unwrap();
+        let tool = ListDirTool::with_working_dir(root.path());
+        let result = tool
+            .execute(json!({ "dir_path": root.path().to_str().unwrap(), "depth": 0 }))
+            .await;
+
+        assert!(matches!(result, Err(ToolError::InvalidInput { .. })));
+    }
+
+    #[tokio::test]
+    async fn marks_symlinks_with_at_suffix() {
+        let root = tempdir().unwrap();
+        tokio::fs::write(root.path().join("target.txt"), b"")
+            .await
+            .unwrap();
+        tokio::fs::symlink(root.path().join("target.txt"), root.path().join("link.txt"))
+            .await
+            .unwrap();
+
+        let tool = ListDirTool::with_working_dir(root.path());
+        let result = tool
+            .execute(json!({ "dir_path": root.path().to_str().unwrap() }))
+            .await
+            .unwrap();
+
+        let entries = result["entries"].as_str().unwrap();
+        assert!(entries.contains("link.txt@"), "symlink must have @ suffix");
+        assert!(entries.contains("target.txt"), "regular file has no suffix");
+        assert!(!entries.contains("target.txt@"));
     }
 
     #[tokio::test]
