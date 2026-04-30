@@ -7,6 +7,8 @@ use ignore::WalkBuilder;
 use schemars::{schema_for, JsonSchema};
 use serde::Deserialize;
 use serde_json::Value;
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -163,7 +165,9 @@ fn search_files(
     }
 
     let mut searcher = SearcherBuilder::new().build();
-    let mut matches: Vec<(PathBuf, SystemTime)> = Vec::new();
+    // Min-heap keyed by Reverse<mtime>: peek() yields the oldest entry, enabling O(limit) memory.
+    let mut heap: BinaryHeap<(Reverse<SystemTime>, PathBuf)> = BinaryHeap::new();
+    let mut total = 0usize;
 
     for entry in walk_builder.build() {
         let entry = match entry {
@@ -179,22 +183,27 @@ fn search_files(
             continue;
         }
         if sink.matched {
+            total += 1;
             let mtime = path
                 .metadata()
                 .and_then(|m| m.modified())
                 .unwrap_or(SystemTime::UNIX_EPOCH);
             let rel = path.strip_prefix(working_dir).unwrap_or(path).to_path_buf();
-            matches.push((rel, mtime));
+            if heap.len() < limit {
+                heap.push((Reverse(mtime), rel));
+            } else if heap.peek().is_some_and(|(rev_t, _)| mtime > rev_t.0) {
+                heap.pop();
+                heap.push((Reverse(mtime), rel));
+            }
         }
     }
 
-    matches.sort_by(|a, b| b.1.cmp(&a.1));
-    let total = matches.len();
     let truncated = total > limit;
-    let files: Vec<String> = matches
+    let mut sorted: Vec<(Reverse<SystemTime>, PathBuf)> = heap.into_vec();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    let files: Vec<String> = sorted
         .into_iter()
-        .take(limit)
-        .map(|(p, _)| p.to_string_lossy().into_owned())
+        .map(|(_, p)| p.to_string_lossy().into_owned())
         .collect();
 
     Ok(serde_json::json!({
