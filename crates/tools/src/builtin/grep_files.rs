@@ -24,6 +24,8 @@ struct GrepFilesInput {
     include: Option<String>,
     /// Maximum number of file paths to return. Defaults to 50.
     limit: Option<usize>,
+    /// Include hidden files and directories (dotfiles). Defaults to false.
+    include_hidden: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -114,6 +116,7 @@ impl Tool for GrepFilesTool {
         })?;
 
         let include = params.include;
+        let include_hidden = params.include_hidden.unwrap_or(false);
         let tool_name = self.name().to_string();
 
         let value = tokio::task::spawn_blocking(move || {
@@ -123,6 +126,7 @@ impl Tool for GrepFilesTool {
                 &matcher,
                 include.as_deref(),
                 limit,
+                include_hidden,
                 &tool_name,
             )
         })
@@ -142,11 +146,12 @@ fn search_files(
     matcher: &RegexMatcher,
     include: Option<&str>,
     limit: usize,
+    include_hidden: bool,
     tool_name: &str,
 ) -> Result<Value, ToolError> {
     let mut walk_builder = WalkBuilder::new(search_path);
     walk_builder
-        .hidden(true)
+        .hidden(!include_hidden)
         .git_ignore(true)
         .git_global(true)
         .git_exclude(true);
