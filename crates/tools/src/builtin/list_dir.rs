@@ -161,6 +161,7 @@ impl Tool for ListDirTool {
         let start = (offset - 1).min(total);
         let end = start.saturating_add(limit).min(total);
         let page = &all_entries[start..end];
+        // offset is 1-indexed; (offset-1)+limit is the exclusive 0-indexed end of this page
         let truncated = (offset - 1).saturating_add(limit) < total;
 
         let mut lines = vec![format!("{}/", canonical_target.display())];
