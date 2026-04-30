@@ -1,5 +1,6 @@
 mod grep_files;
 mod list_dir;
+mod path;
 mod read;
 
 pub use grep_files::GrepFilesTool;

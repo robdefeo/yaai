@@ -173,11 +173,12 @@ async fn dispatch_grep_files_no_matches_returns_empty_ok() {
 
 #[tokio::test]
 async fn dispatch_read_returns_file_contents() {
-    let mut f = NamedTempFile::new().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = NamedTempFile::new_in(dir.path()).unwrap();
     writeln!(f, "line one").unwrap();
     writeln!(f, "line two").unwrap();
 
-    let registry = ToolRegistry::new().register(ReadTool::new());
+    let registry = ToolRegistry::new().register(ReadTool::with_working_dir(dir.path()));
 
     let result = registry
         .dispatch(

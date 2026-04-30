@@ -52,22 +52,6 @@ impl ListDirTool {
     pub fn new() -> Self {
         Self { working_dir: None }
     }
-
-    async fn resolve_working_dir(&self) -> Result<PathBuf, ToolError> {
-        let raw = match &self.working_dir {
-            Some(p) => p.clone(),
-            None => std::env::current_dir().map_err(|e| ToolError::ExecutionFailed {
-                name: self.name().to_string(),
-                reason: format!("cannot determine working directory: {e}"),
-            })?,
-        };
-        tokio::fs::canonicalize(&raw)
-            .await
-            .map_err(|e| ToolError::ExecutionFailed {
-                name: self.name().to_string(),
-                reason: format!("cannot canonicalize working directory: {e}"),
-            })
-    }
 }
 
 impl Default for ListDirTool {
@@ -126,21 +110,19 @@ impl Tool for ListDirTool {
             });
         }
 
-        let canonical_target = tokio::fs::canonicalize(&params.dir_path)
-            .await
-            .map_err(|e| ToolError::ExecutionFailed {
+        let working_dir = match &self.working_dir {
+            Some(p) => p.clone(),
+            None => std::env::current_dir().map_err(|e| ToolError::ExecutionFailed {
                 name: self.name().to_string(),
-                reason: format!("cannot access '{}': {e}", params.dir_path),
-            })?;
-
-        let canonical_cwd = self.resolve_working_dir().await?;
-
-        if !canonical_target.starts_with(&canonical_cwd) {
-            return Err(ToolError::ExecutionFailed {
-                name: self.name().to_string(),
-                reason: format!("'{}' is outside the working directory", params.dir_path),
-            });
-        }
+                reason: format!("cannot determine working directory: {e}"),
+            })?,
+        };
+        let canonical_target = super::path::resolve_and_check(
+            &working_dir,
+            std::path::Path::new(&params.dir_path),
+            self.name(),
+        )
+        .await?;
 
         let metadata = tokio::fs::metadata(&canonical_target).await.map_err(|e| {
             ToolError::ExecutionFailed {
