@@ -1,6 +1,8 @@
 use std::io::Write;
 use tempfile::NamedTempFile;
-use yaai_tools::{builtin::ReadTool, ToolError, ToolRegistry, ToolSchemaFormat};
+use yaai_tools::{
+    builtin::GrepFilesTool, builtin::ReadTool, ToolError, ToolRegistry, ToolSchemaFormat,
+};
 
 // --- ToolError display contract tests ---
 
@@ -101,6 +103,70 @@ fn descriptions_openai_uses_function_parameters_key() {
     assert!(func.get("parameters").is_some());
     assert!(func.get("input_schema").is_none());
     assert_eq!(func["name"], "read");
+}
+
+// --- GrepFiles tool integration via registry ---
+
+#[test]
+fn grep_files_tool_appears_in_registry() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = ToolRegistry::new().register(GrepFilesTool::with_working_dir(dir.path()));
+    assert!(registry.names().contains(&"grep_files"));
+}
+
+#[tokio::test]
+async fn dispatch_grep_files_missing_pattern_returns_invalid_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = ToolRegistry::new().register(GrepFilesTool::with_working_dir(dir.path()));
+
+    match registry.dispatch("grep_files", serde_json::json!({})).await {
+        Err(ToolError::InvalidInput { name, .. }) => {
+            assert_eq!(name, "grep_files");
+        }
+        _ => panic!("expected InvalidInput for missing pattern"),
+    }
+}
+
+#[tokio::test]
+async fn dispatch_grep_files_returns_matching_file() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("lib.rs"), "pub fn grep_target() {}").unwrap();
+    std::fs::write(dir.path().join("other.rs"), "pub fn unrelated() {}").unwrap();
+
+    let registry = ToolRegistry::new().register(GrepFilesTool::with_working_dir(dir.path()));
+
+    let result = registry
+        .dispatch(
+            "grep_files",
+            serde_json::json!({ "pattern": "grep_target" }),
+        )
+        .await
+        .unwrap();
+
+    let files = result["files"].as_array().unwrap();
+    assert_eq!(files.len(), 1);
+    assert!(files[0].as_str().unwrap().contains("lib.rs"));
+    assert_eq!(result["truncated"], false);
+}
+
+#[tokio::test]
+async fn dispatch_grep_files_no_matches_returns_empty_ok() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.rs"), "fn main() {}").unwrap();
+
+    let registry = ToolRegistry::new().register(GrepFilesTool::with_working_dir(dir.path()));
+
+    let result = registry
+        .dispatch(
+            "grep_files",
+            serde_json::json!({ "pattern": "this_pattern_does_not_exist_xyz" }),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result["files"].as_array().unwrap().len(), 0);
+    assert_eq!(result["total"], 0);
+    assert_eq!(result["truncated"], false);
 }
 
 // --- Read tool integration via registry ---
