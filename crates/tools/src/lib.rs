@@ -10,6 +10,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 pub use builtin::GrepFilesTool;
+pub use builtin::ListDirTool;
 pub use builtin::ReadTool;
 
 /// Errors that can occur during tool execution.
