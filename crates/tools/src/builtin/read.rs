@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
 
 const DEFAULT_LIMIT: usize = 2000;
@@ -51,11 +52,19 @@ struct ReadResult<'a> {
 /// Binary files are rejected with a descriptive error.
 /// When output is truncated a `continuation` hint is included in the response.
 #[derive(Clone)]
-pub struct ReadTool;
+pub struct ReadTool {
+    working_dir: Option<PathBuf>,
+}
 
 impl ReadTool {
     pub fn new() -> Self {
-        Self
+        Self { working_dir: None }
+    }
+
+    pub fn with_working_dir(dir: impl Into<PathBuf>) -> Self {
+        Self {
+            working_dir: Some(dir.into()),
+        }
     }
 }
 
@@ -115,9 +124,23 @@ impl Tool for ReadTool {
             });
         }
 
+        let working_dir = match &self.working_dir {
+            Some(p) => p.clone(),
+            None => std::env::current_dir().map_err(|e| ToolError::ExecutionFailed {
+                name: self.name().to_string(),
+                reason: format!("cannot determine working directory: {e}"),
+            })?,
+        };
+        let (canonical_path, _) = super::path::resolve_and_check(
+            &working_dir,
+            std::path::Path::new(file_path),
+            self.name(),
+        )
+        .await?;
+
         // Stat the file
         let metadata =
-            tokio::fs::metadata(file_path)
+            tokio::fs::metadata(&canonical_path)
                 .await
                 .map_err(|e| ToolError::ExecutionFailed {
                     name: self.name().to_string(),
@@ -132,13 +155,12 @@ impl Tool for ReadTool {
         }
 
         // Read raw bytes for binary detection
-        let mut file =
-            tokio::fs::File::open(file_path)
-                .await
-                .map_err(|e| ToolError::ExecutionFailed {
-                    name: self.name().to_string(),
-                    reason: format!("cannot open '{}': {}", file_path, e),
-                })?;
+        let mut file = tokio::fs::File::open(&canonical_path).await.map_err(|e| {
+            ToolError::ExecutionFailed {
+                name: self.name().to_string(),
+                reason: format!("cannot open '{}': {}", file_path, e),
+            }
+        })?;
 
         let sample_size = BINARY_SAMPLE_BYTES.min(metadata.len() as usize);
         let mut sample = vec![0u8; sample_size];
@@ -269,11 +291,12 @@ mod tests {
 
     #[tokio::test]
     async fn reads_simple_file() {
-        let mut f = NamedTempFile::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = NamedTempFile::new_in(dir.path()).unwrap();
         writeln!(f, "hello").unwrap();
         writeln!(f, "world").unwrap();
 
-        let tool = ReadTool::new();
+        let tool = ReadTool::with_working_dir(dir.path());
         let result = tool
             .execute(make_input(f.path().to_str().unwrap(), None, None))
             .await
@@ -290,12 +313,13 @@ mod tests {
 
     #[tokio::test]
     async fn paginates_with_offset_and_limit() {
-        let mut f = NamedTempFile::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = NamedTempFile::new_in(dir.path()).unwrap();
         for i in 1..=10 {
             writeln!(f, "line {i}").unwrap();
         }
 
-        let tool = ReadTool::new();
+        let tool = ReadTool::with_working_dir(dir.path());
         let result = tool
             .execute(make_input(f.path().to_str().unwrap(), Some(4), Some(3)))
             .await
@@ -312,12 +336,13 @@ mod tests {
 
     #[tokio::test]
     async fn includes_continuation_when_truncated() {
-        let mut f = NamedTempFile::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = NamedTempFile::new_in(dir.path()).unwrap();
         for i in 1..=10 {
             writeln!(f, "line {i}").unwrap();
         }
 
-        let tool = ReadTool::new();
+        let tool = ReadTool::with_working_dir(dir.path());
         let result = tool
             .execute(make_input(f.path().to_str().unwrap(), Some(1), Some(3)))
             .await
@@ -331,10 +356,11 @@ mod tests {
 
     #[tokio::test]
     async fn no_continuation_when_fully_read() {
-        let mut f = NamedTempFile::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = NamedTempFile::new_in(dir.path()).unwrap();
         writeln!(f, "only line").unwrap();
 
-        let tool = ReadTool::new();
+        let tool = ReadTool::with_working_dir(dir.path());
         let result = tool
             .execute(make_input(f.path().to_str().unwrap(), None, None))
             .await
@@ -354,9 +380,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn errors_on_path_outside_working_directory() {
+        let inside = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        tokio::fs::write(outside.path().join("file.txt"), b"content")
+            .await
+            .unwrap();
+
+        let tool = ReadTool::with_working_dir(inside.path());
+        let result = tool
+            .execute(make_input(
+                outside.path().join("file.txt").to_str().unwrap(),
+                None,
+                None,
+            ))
+            .await;
+
+        match result {
+            Err(ToolError::ExecutionFailed { reason, .. }) => {
+                assert!(reason.contains("outside the working directory"));
+            }
+            _ => panic!("expected ExecutionFailed for path outside working directory"),
+        }
+    }
+
+    #[tokio::test]
     async fn errors_on_directory() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = ReadTool::new();
+        let tool = ReadTool::with_working_dir(dir.path());
         let result = tool
             .execute(make_input(dir.path().to_str().unwrap(), None, None))
             .await;
@@ -371,10 +422,11 @@ mod tests {
 
     #[tokio::test]
     async fn errors_on_binary_file() {
-        let mut f = NamedTempFile::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = NamedTempFile::new_in(dir.path()).unwrap();
         f.write_all(&[0x00, 0x01, 0x02, 0xFF, 0xFE]).unwrap();
 
-        let tool = ReadTool::new();
+        let tool = ReadTool::with_working_dir(dir.path());
         let result = tool
             .execute(make_input(f.path().to_str().unwrap(), None, None))
             .await;
@@ -389,10 +441,11 @@ mod tests {
 
     #[tokio::test]
     async fn errors_on_zero_limit() {
-        let mut f = NamedTempFile::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = NamedTempFile::new_in(dir.path()).unwrap();
         writeln!(f, "line").unwrap();
 
-        let tool = ReadTool::new();
+        let tool = ReadTool::with_working_dir(dir.path());
         let result = tool
             .execute(make_input(f.path().to_str().unwrap(), None, Some(0)))
             .await;
@@ -402,10 +455,11 @@ mod tests {
 
     #[tokio::test]
     async fn errors_on_zero_offset() {
-        let mut f = NamedTempFile::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = NamedTempFile::new_in(dir.path()).unwrap();
         writeln!(f, "line").unwrap();
 
-        let tool = ReadTool::new();
+        let tool = ReadTool::with_working_dir(dir.path());
         let result = tool
             .execute(make_input(f.path().to_str().unwrap(), Some(0), None))
             .await;
@@ -415,10 +469,11 @@ mod tests {
 
     #[tokio::test]
     async fn offset_past_eof_returns_empty_content() {
-        let mut f = NamedTempFile::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = NamedTempFile::new_in(dir.path()).unwrap();
         writeln!(f, "line 1").unwrap();
 
-        let tool = ReadTool::new();
+        let tool = ReadTool::with_working_dir(dir.path());
         let result = tool
             .execute(make_input(f.path().to_str().unwrap(), Some(999), None))
             .await
@@ -435,12 +490,13 @@ mod tests {
     #[tokio::test]
     async fn offset_past_eof_from_never_exceeds_to() {
         // Regression test: from must always be <= to regardless of offset value.
-        let mut f = NamedTempFile::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = NamedTempFile::new_in(dir.path()).unwrap();
         for i in 1..=5 {
             writeln!(f, "line {i}").unwrap();
         }
 
-        let tool = ReadTool::new();
+        let tool = ReadTool::with_working_dir(dir.path());
         for out_of_range_offset in [6u64, 7, 100, 9999] {
             let result = tool
                 .execute(make_input(
@@ -464,11 +520,12 @@ mod tests {
     async fn long_line_returned_in_full_with_no_content_loss() {
         // A single line larger than MAX_BYTES must still be returned completely via the
         // fallback path — no silent truncation, no panic.
-        let mut f = NamedTempFile::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = NamedTempFile::new_in(dir.path()).unwrap();
         let big = "a".repeat(MAX_BYTES + 1024);
         writeln!(f, "{big}").unwrap();
 
-        let tool = ReadTool::new();
+        let tool = ReadTool::with_working_dir(dir.path());
         let result = tool
             .execute(make_input(f.path().to_str().unwrap(), None, None))
             .await
@@ -492,13 +549,14 @@ mod tests {
         // Line 1 alone exceeds MAX_BYTES. The fallback forces it into the response in full.
         // Lines 2 and 3 are then NOT included (the page is full after line 1).
         // A continuation hint must be present pointing at line 2.
-        let mut f = NamedTempFile::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = NamedTempFile::new_in(dir.path()).unwrap();
         let big = "b".repeat(MAX_BYTES + 1024);
         writeln!(f, "{big}").unwrap(); // line 1 — oversized
         writeln!(f, "line two").unwrap(); // line 2
         writeln!(f, "line three").unwrap(); // line 3
 
-        let tool = ReadTool::new();
+        let tool = ReadTool::with_working_dir(dir.path());
         let result = tool
             .execute(make_input(f.path().to_str().unwrap(), None, None))
             .await
@@ -538,11 +596,12 @@ mod tests {
 
     #[tokio::test]
     async fn unicode_content_is_returned_unmodified() {
-        let mut f = NamedTempFile::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = NamedTempFile::new_in(dir.path()).unwrap();
         writeln!(f, "héllo wörld 日本語").unwrap();
         writeln!(f, "second line").unwrap();
 
-        let tool = ReadTool::new();
+        let tool = ReadTool::with_working_dir(dir.path());
         let result = tool
             .execute(make_input(f.path().to_str().unwrap(), None, None))
             .await

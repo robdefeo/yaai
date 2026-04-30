@@ -87,28 +87,8 @@ impl Tool for GrepFilesTool {
             .map(|p| self.working_dir.join(p))
             .unwrap_or_else(|| self.working_dir.clone());
 
-        let canonical_search =
-            search_path
-                .canonicalize()
-                .map_err(|e| ToolError::ExecutionFailed {
-                    name: self.name().to_string(),
-                    reason: format!("cannot resolve path '{}': {}", search_path.display(), e),
-                })?;
-
-        let canonical_wd =
-            self.working_dir
-                .canonicalize()
-                .map_err(|e| ToolError::ExecutionFailed {
-                    name: self.name().to_string(),
-                    reason: format!("cannot resolve working directory: {}", e),
-                })?;
-
-        if !canonical_search.starts_with(&canonical_wd) {
-            return Err(ToolError::ExecutionFailed {
-                name: self.name().to_string(),
-                reason: "path outside working directory".to_string(),
-            });
-        }
+        let (canonical_search, canonical_wd) =
+            super::path::resolve_and_check(&self.working_dir, &search_path, self.name()).await?;
 
         let matcher = RegexMatcher::new(&params.pattern).map_err(|e| ToolError::InvalidInput {
             name: self.name().to_string(),
