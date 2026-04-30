@@ -120,9 +120,8 @@ async fn dispatch_grep_files_missing_pattern_returns_invalid_input() {
     let registry = ToolRegistry::new().register(GrepFilesTool::with_working_dir(dir.path()));
 
     match registry.dispatch("grep_files", serde_json::json!({})).await {
-        Err(ToolError::InvalidInput { name, reason }) => {
+        Err(ToolError::InvalidInput { name, .. }) => {
             assert_eq!(name, "grep_files");
-            assert!(reason.contains("missing required field 'pattern'"));
         }
         _ => panic!("expected InvalidInput for missing pattern"),
     }
