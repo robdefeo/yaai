@@ -4,7 +4,7 @@ use uuid::Uuid;
 use yaai_agent_loop::{AgentConfig, AgentRunner};
 use yaai_llm::LlmClient;
 use yaai_memory::SessionMemory;
-use yaai_tools::{ReadTool, ToolRegistry, ToolSchemaFormat};
+use yaai_tools::{ListDirTool, ReadTool, ToolRegistry, ToolSchemaFormat};
 use yaai_tracer::Tracer;
 
 use super::llm::{build_llm_client, parse_provider_model, Provider};
@@ -49,7 +49,9 @@ pub async fn run_prompt(
 }
 
 pub fn build_tool_registry() -> ToolRegistry {
-    ToolRegistry::new().register(ReadTool::new())
+    ToolRegistry::new()
+        .register(ListDirTool::new())
+        .register(ReadTool::new())
 }
 
 /// Run a prompt, returning the result and the updated conversation history.
@@ -121,6 +123,15 @@ mod tests {
         assert!(
             registry.names().contains(&"read"),
             "expected 'read' tool to be registered"
+        );
+    }
+
+    #[test]
+    fn build_tool_registry_includes_list_dir_tool() {
+        let registry = build_tool_registry();
+        assert!(
+            registry.names().contains(&"list_dir"),
+            "expected 'list_dir' tool to be registered"
         );
     }
 
