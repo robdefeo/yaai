@@ -80,7 +80,7 @@ impl Tool for GrepFilesTool {
         let search_path = params
             .path
             .as_deref()
-            .map(PathBuf::from)
+            .map(|p| self.working_dir.join(p))
             .unwrap_or_else(|| self.working_dir.clone());
 
         let canonical_search =
