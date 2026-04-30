@@ -159,9 +159,9 @@ impl Tool for ListDirTool {
         let all_entries = collect_entries(&canonical_target, max_depth).await;
         let total = all_entries.len();
         let start = (offset - 1).min(total);
-        let end = (start + limit).min(total);
+        let end = start.saturating_add(limit).min(total);
         let page = &all_entries[start..end];
-        let truncated = (offset - 1 + limit) < total;
+        let truncated = (offset - 1).saturating_add(limit) < total;
 
         let mut lines = vec![format!("{}/", canonical_target.display())];
         for entry in page {
