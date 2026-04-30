@@ -12,7 +12,6 @@ async-trait = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
-grep = "0.3"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 ignore = "0.4"
