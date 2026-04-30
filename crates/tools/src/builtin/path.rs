@@ -2,12 +2,12 @@ use crate::ToolError;
 use std::path::{Path, PathBuf};
 
 /// Resolves `input_path` and `working_dir` to canonical paths, then verifies
-/// that `input_path` falls within `working_dir`. Returns the canonical input path.
+/// that `input_path` falls within `working_dir`. Returns `(canonical_input, canonical_wd)`.
 pub(super) async fn resolve_and_check(
     working_dir: &Path,
     input_path: &Path,
     tool_name: &str,
-) -> Result<PathBuf, ToolError> {
+) -> Result<(PathBuf, PathBuf), ToolError> {
     let canonical_input =
         tokio::fs::canonicalize(input_path)
             .await
@@ -34,7 +34,7 @@ pub(super) async fn resolve_and_check(
         });
     }
 
-    Ok(canonical_input)
+    Ok((canonical_input, canonical_wd))
 }
 
 #[cfg(test)]

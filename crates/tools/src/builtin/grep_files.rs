@@ -87,15 +87,8 @@ impl Tool for GrepFilesTool {
             .map(|p| self.working_dir.join(p))
             .unwrap_or_else(|| self.working_dir.clone());
 
-        let canonical_search =
+        let (canonical_search, canonical_wd) =
             super::path::resolve_and_check(&self.working_dir, &search_path, self.name()).await?;
-
-        let canonical_wd = tokio::fs::canonicalize(&self.working_dir)
-            .await
-            .map_err(|e| ToolError::ExecutionFailed {
-                name: self.name().to_string(),
-                reason: format!("cannot resolve working directory: {}", e),
-            })?;
 
         let matcher = RegexMatcher::new(&params.pattern).map_err(|e| ToolError::InvalidInput {
             name: self.name().to_string(),

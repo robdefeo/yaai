@@ -131,12 +131,16 @@ impl Tool for ReadTool {
                 reason: format!("cannot determine working directory: {e}"),
             })?,
         };
-        super::path::resolve_and_check(&working_dir, std::path::Path::new(file_path), self.name())
-            .await?;
+        let (canonical_path, _) = super::path::resolve_and_check(
+            &working_dir,
+            std::path::Path::new(file_path),
+            self.name(),
+        )
+        .await?;
 
         // Stat the file
         let metadata =
-            tokio::fs::metadata(file_path)
+            tokio::fs::metadata(&canonical_path)
                 .await
                 .map_err(|e| ToolError::ExecutionFailed {
                     name: self.name().to_string(),
@@ -151,13 +155,12 @@ impl Tool for ReadTool {
         }
 
         // Read raw bytes for binary detection
-        let mut file =
-            tokio::fs::File::open(file_path)
-                .await
-                .map_err(|e| ToolError::ExecutionFailed {
-                    name: self.name().to_string(),
-                    reason: format!("cannot open '{}': {}", file_path, e),
-                })?;
+        let mut file = tokio::fs::File::open(&canonical_path).await.map_err(|e| {
+            ToolError::ExecutionFailed {
+                name: self.name().to_string(),
+                reason: format!("cannot open '{}': {}", file_path, e),
+            }
+        })?;
 
         let sample_size = BINARY_SAMPLE_BYTES.min(metadata.len() as usize);
         let mut sample = vec![0u8; sample_size];

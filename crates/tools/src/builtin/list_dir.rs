@@ -117,7 +117,7 @@ impl Tool for ListDirTool {
                 reason: format!("cannot determine working directory: {e}"),
             })?,
         };
-        let canonical_target = super::path::resolve_and_check(
+        let (canonical_target, _) = super::path::resolve_and_check(
             &working_dir,
             std::path::Path::new(&params.dir_path),
             self.name(),
