@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::{sse::pop_sse_line, ConversationTurn, LlmClient, LlmResponse, Message, ToolCall};
 
@@ -51,6 +51,13 @@ impl AnthropicClient {
 // ── Anthropic wire types ─────────────────────────────────────────────────────
 
 #[derive(Serialize)]
+struct ToolChoice {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    disable_parallel_tool_use: bool,
+}
+
+#[derive(Serialize)]
 struct MessagesRequest<'a> {
     model: &'a str,
     max_tokens: u32,
@@ -59,6 +66,8 @@ struct MessagesRequest<'a> {
     messages: Vec<AnthropicMessage>,
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
     tools: &'a [Value],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<ToolChoice>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     stream: bool,
 }
@@ -114,12 +123,10 @@ enum ContentBlock {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum StreamEvent {
     ContentBlockStart {
-        #[allow(dead_code)]
         index: usize,
         content_block: StreamBlock,
     },
     ContentBlockDelta {
-        #[allow(dead_code)]
         index: usize,
         delta: StreamDelta,
     },
@@ -261,12 +268,17 @@ impl LlmClient for AnthropicClient {
 
         let messages: Vec<AnthropicMessage> = turns.iter().map(turn_to_anthropic).collect();
 
+        let tool_choice = (!tools.is_empty()).then_some(ToolChoice {
+            kind: "auto",
+            disable_parallel_tool_use: true,
+        });
         let body = MessagesRequest {
             model: &self.model,
             max_tokens: DEFAULT_MAX_TOKENS,
             system,
             messages,
             tools,
+            tool_choice,
             stream: false,
         };
 
@@ -305,12 +317,17 @@ impl LlmClient for AnthropicClient {
 
         let messages: Vec<AnthropicMessage> = turns.iter().map(turn_to_anthropic).collect();
 
+        let tool_choice = (!tools.is_empty()).then_some(ToolChoice {
+            kind: "auto",
+            disable_parallel_tool_use: true,
+        });
         let body = MessagesRequest {
             model: &self.model,
             max_tokens: DEFAULT_MAX_TOKENS,
             system,
             messages,
             tools,
+            tool_choice,
             stream: true,
         };
 
@@ -335,6 +352,7 @@ impl LlmClient for AnthropicClient {
         let mut tool_id: Option<String> = None;
         let mut tool_name: Option<String> = None;
         let mut tool_json = String::new();
+        let mut tool_block_index: Option<usize> = None;
 
         while let Some(chunk) = response.chunk().await.context("reading SSE stream")? {
             buf.extend_from_slice(&chunk);
@@ -345,26 +363,37 @@ impl LlmClient for AnthropicClient {
                 };
 
                 match serde_json::from_str::<StreamEvent>(data) {
-                    Ok(StreamEvent::ContentBlockStart { content_block, .. }) => {
+                    Ok(StreamEvent::ContentBlockStart {
+                        index,
+                        content_block,
+                    }) => {
                         if let StreamBlock::ToolUse { id, name } = content_block {
-                            tool_id = Some(id);
-                            tool_name = Some(name);
+                            if tool_id.is_none() {
+                                tool_id = Some(id);
+                                tool_name = Some(name);
+                                tool_block_index = Some(index);
+                            }
                         }
                     }
-                    Ok(StreamEvent::ContentBlockDelta { delta, .. }) => match delta {
+                    Ok(StreamEvent::ContentBlockDelta { index, delta }) => match delta {
                         StreamDelta::TextDelta { text: t } => {
                             let _ = tx.send(t.clone());
                             text.push_str(&t);
                         }
                         StreamDelta::InputJsonDelta { partial_json } => {
-                            tool_json.push_str(&partial_json);
+                            if Some(index) == tool_block_index {
+                                tool_json.push_str(&partial_json);
+                            }
                         }
                         StreamDelta::Other => {}
                     },
                     Ok(StreamEvent::Error { error }) => {
                         bail!("Anthropic stream error: {}", error.message);
                     }
-                    Ok(StreamEvent::Other) | Err(_) => {}
+                    Ok(StreamEvent::Other) => {}
+                    Err(e) => {
+                        warn!(error = %e, raw = %data, "failed to parse SSE event");
+                    }
                 }
             }
         }
@@ -374,7 +403,8 @@ impl LlmClient for AnthropicClient {
                 let arguments = if tool_json.is_empty() {
                     serde_json::json!({})
                 } else {
-                    serde_json::from_str(&tool_json).context("parsing tool input JSON")?
+                    serde_json::from_str(&tool_json)
+                        .with_context(|| format!("parsing tool input JSON: {:?}", tool_json))?
                 };
                 Some(ToolCall {
                     id,
@@ -467,6 +497,7 @@ mod tests {
             system: None,
             messages: vec![],
             tools: &[],
+            tool_choice: None,
             stream: false,
         };
         let json = serde_json::to_value(&req).unwrap();
@@ -482,6 +513,7 @@ mod tests {
             system: None,
             messages: vec![],
             tools: &tools,
+            tool_choice: None,
             stream: false,
         };
         let json = serde_json::to_value(&req).unwrap();
@@ -594,5 +626,88 @@ mod tests {
         let r = parse_blocks(&blocks);
         assert!(r.content.is_none());
         assert!(r.tool_call.is_some());
+    }
+
+    // ── Streaming accumulation tests ─────────────────────────────────────────
+
+    /// Simulate the streaming loop over a set of SSE data lines and return the
+    /// accumulated tool call id, name, and raw json string.  The mpsc channel is
+    /// needed because `TextDelta` events send tokens to the UI.
+    fn run_sse_accumulation(sse_lines: &[&str]) -> (Option<String>, Option<String>, String) {
+        let (_tx, _rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let mut tool_id: Option<String> = None;
+        let mut tool_name: Option<String> = None;
+        let mut tool_json = String::new();
+        let mut tool_block_index: Option<usize> = None;
+
+        for line in sse_lines {
+            let Some(data) = line.strip_prefix("data: ") else {
+                continue;
+            };
+            let Ok(event) = serde_json::from_str::<StreamEvent>(data) else {
+                continue;
+            };
+            match event {
+                StreamEvent::ContentBlockStart {
+                    index,
+                    content_block: StreamBlock::ToolUse { id, name },
+                } => {
+                    if tool_id.is_none() {
+                        tool_id = Some(id);
+                        tool_name = Some(name);
+                        tool_block_index = Some(index);
+                    }
+                }
+                StreamEvent::ContentBlockStart { .. } => {}
+                StreamEvent::ContentBlockDelta { index, delta } => match delta {
+                    StreamDelta::TextDelta { .. } => {}
+                    StreamDelta::InputJsonDelta { partial_json } => {
+                        if Some(index) == tool_block_index {
+                            tool_json.push_str(&partial_json);
+                        }
+                    }
+                    StreamDelta::Other => {}
+                },
+                _ => {}
+            }
+        }
+        (tool_id, tool_name, tool_json)
+    }
+
+    #[test]
+    fn single_tool_call_accumulates_correctly() {
+        let lines = [
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_01","name":"list_dir"}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"dir_path\":"}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"/\"}"}}"#,
+        ];
+        let (id, name, json) = run_sse_accumulation(&lines);
+        assert_eq!(id.as_deref(), Some("toolu_01"));
+        assert_eq!(name.as_deref(), Some("list_dir"));
+        let args: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(args["dir_path"], "/");
+    }
+
+    #[test]
+    fn parallel_tool_calls_captures_only_first() {
+        // Two sequential tool_use blocks in the same response (parallel tool use).
+        // Only the first should be captured; the second's JSON must NOT contaminate
+        // tool_json (which would produce invalid concatenated JSON).
+        let lines = [
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_01","name":"list_dir"}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"dir_path\":\"/\"}"}}"#,
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            r#"data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_02","name":"read"}}"#,
+            r#"data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"file_path\":\"/README.md\"}"}}"#,
+            r#"data: {"type":"content_block_stop","index":1}"#,
+        ];
+        let (id, name, json) = run_sse_accumulation(&lines);
+        assert_eq!(id.as_deref(), Some("toolu_01"));
+        assert_eq!(name.as_deref(), Some("list_dir"));
+        // json must be valid and contain only the first tool's input
+        let args: serde_json::Value =
+            serde_json::from_str(&json).expect("tool_json must be valid JSON");
+        assert_eq!(args["dir_path"], "/");
+        assert!(args.get("file_path").is_none());
     }
 }
