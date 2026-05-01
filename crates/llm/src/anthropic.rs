@@ -383,6 +383,8 @@ impl LlmClient for AnthropicClient {
                         StreamDelta::InputJsonDelta { partial_json } => {
                             if Some(index) == tool_block_index {
                                 tool_json.push_str(&partial_json);
+                            } else if tool_block_index.is_some() {
+                                warn!(skipped_index = index, "ignoring parallel tool call delta");
                             }
                         }
                         StreamDelta::Other => {}

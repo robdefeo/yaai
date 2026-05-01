@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::{sse::pop_sse_line, ConversationTurn, LlmClient, LlmResponse, Message, ToolCall};
 
@@ -235,9 +235,18 @@ fn apply_stream_data(
                 if let Some(idx) = tool_call.index {
                     match accumulator.tool_block_index {
                         None => accumulator.tool_block_index = Some(idx),
-                        Some(first) if idx != first => continue,
+                        Some(first) if idx != first => {
+                            warn!(
+                                first_index = first,
+                                skipped_index = idx,
+                                "ignoring parallel tool call delta"
+                            );
+                            continue;
+                        }
                         _ => {}
                     }
+                } else if accumulator.tool_block_index.is_some() {
+                    // index absent but we already captured a call — treat as belonging to it
                 }
                 if let Some(id) = tool_call.id {
                     accumulator.tool_id = Some(id);
