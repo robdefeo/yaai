@@ -289,6 +289,21 @@ mod tests {
     }
 
     #[test]
+    fn complete_run_error_with_streamed_content_emits_both_entries() {
+        let mut state = AppState::default();
+        state.start_run("hello");
+        state.append_token("partial answer".to_string());
+        state.complete_run(Err("boom".to_string()));
+
+        assert_eq!(state.transcript.len(), 3); // user + assistant + error
+        assert_eq!(state.transcript[1].role, TranscriptRole::Assistant);
+        assert_eq!(state.transcript[1].content, "partial answer");
+        assert_eq!(state.transcript[2].role, TranscriptRole::Error);
+        assert_eq!(state.transcript[2].content, "boom");
+        assert_eq!(state.run_state, RunState::Idle);
+    }
+
+    #[test]
     fn escape_clears_ready_status() {
         let mut state = AppState {
             status: "custom".to_string(),
