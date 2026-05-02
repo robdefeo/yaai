@@ -4,6 +4,7 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
@@ -54,7 +55,6 @@ impl AnthropicClient {
 struct ToolChoice {
     #[serde(rename = "type")]
     kind: &'static str,
-    disable_parallel_tool_use: bool,
 }
 
 #[derive(Serialize)]
@@ -184,21 +184,18 @@ fn turn_to_anthropic(turn: &ConversationTurn) -> AnthropicMessage {
                 text: content.clone(),
             }],
         },
-        ConversationTurn::AssistantToolCall {
-            id,
-            name,
-            arguments,
-            reasoning,
-        } => {
+        ConversationTurn::AssistantToolCall { calls, reasoning } => {
             let mut blocks = Vec::new();
             if let Some(text) = reasoning {
                 blocks.push(AnthropicBlock::Text { text: text.clone() });
             }
-            blocks.push(AnthropicBlock::ToolUse {
-                id: id.clone(),
-                name: name.clone(),
-                input: arguments.clone(),
-            });
+            for tc in calls {
+                blocks.push(AnthropicBlock::ToolUse {
+                    id: tc.id.clone(),
+                    name: tc.name.clone(),
+                    input: tc.arguments.clone(),
+                });
+            }
             AnthropicMessage {
                 role: "assistant",
                 content: blocks,
@@ -217,42 +214,83 @@ fn turn_to_anthropic(turn: &ConversationTurn) -> AnthropicMessage {
     }
 }
 
+/// Build the messages array for an Anthropic request, merging consecutive
+/// ToolResult turns into a single user message — required by the API when
+/// parallel tool calls produce multiple results.
+fn build_anthropic_messages(turns: &[ConversationTurn]) -> Vec<AnthropicMessage> {
+    let mut messages = Vec::with_capacity(turns.len());
+    let mut i = 0;
+    while i < turns.len() {
+        if let ConversationTurn::ToolResult {
+            tool_call_id,
+            content,
+        } = &turns[i]
+        {
+            let mut blocks = vec![AnthropicBlock::ToolResult {
+                tool_use_id: tool_call_id.clone(),
+                content: content.clone(),
+            }];
+            i += 1;
+            while i < turns.len() {
+                if let ConversationTurn::ToolResult {
+                    tool_call_id,
+                    content,
+                } = &turns[i]
+                {
+                    blocks.push(AnthropicBlock::ToolResult {
+                        tool_use_id: tool_call_id.clone(),
+                        content: content.clone(),
+                    });
+                    i += 1;
+                } else {
+                    break;
+                }
+            }
+            messages.push(AnthropicMessage {
+                role: "user",
+                content: blocks,
+            });
+        } else {
+            messages.push(turn_to_anthropic(&turns[i]));
+            i += 1;
+        }
+    }
+    messages
+}
+
 /// Parse a slice of [`ContentBlock`]s into an [`LlmResponse`].
 ///
-/// Text blocks are concatenated (newline-separated) so that multiple `Text`
-/// blocks before a `ToolUse` are all preserved as reasoning. The first
-/// `ToolUse` block terminates the scan and the accumulated text is returned
-/// as `content` alongside the tool call.
+/// Text blocks before any tool call are accumulated as reasoning. All
+/// `ToolUse` blocks are collected (supporting parallel tool use).
 fn parse_blocks(blocks: &[ContentBlock]) -> LlmResponse {
     let mut reasoning: Option<String> = None;
+    let mut tool_calls: Vec<ToolCall> = Vec::new();
     for block in blocks {
         match block {
-            ContentBlock::Text { text } => match reasoning.as_mut() {
-                Some(r) => {
-                    r.push('\n');
-                    r.push_str(text);
+            ContentBlock::Text { text } => {
+                if tool_calls.is_empty() {
+                    match reasoning.as_mut() {
+                        Some(r) => {
+                            r.push('\n');
+                            r.push_str(text);
+                        }
+                        None => reasoning = Some(text.clone()),
+                    }
                 }
-                None => reasoning = Some(text.clone()),
-            },
+            }
             ContentBlock::ToolUse { id, name, input } => {
-                return LlmResponse {
-                    content: reasoning,
-                    tool_call: Some(ToolCall {
-                        id: id.clone(),
-                        name: name.clone(),
-                        arguments: input.clone(),
-                    }),
-                };
+                tool_calls.push(ToolCall {
+                    id: id.clone(),
+                    name: name.clone(),
+                    arguments: input.clone(),
+                });
             }
             ContentBlock::Unknown => {}
         }
     }
-    if let Some(text) = reasoning {
-        return LlmResponse::text(text);
-    }
     LlmResponse {
-        content: None,
-        tool_call: None,
+        content: reasoning,
+        tool_calls,
     }
 }
 
@@ -266,12 +304,9 @@ impl LlmClient for AnthropicClient {
     ) -> Result<LlmResponse> {
         debug!(model = %self.model, turns = turns.len(), "calling Anthropic");
 
-        let messages: Vec<AnthropicMessage> = turns.iter().map(turn_to_anthropic).collect();
+        let messages = build_anthropic_messages(turns);
 
-        let tool_choice = (!tools.is_empty()).then_some(ToolChoice {
-            kind: "auto",
-            disable_parallel_tool_use: true,
-        });
+        let tool_choice = (!tools.is_empty()).then_some(ToolChoice { kind: "auto" });
         let body = MessagesRequest {
             model: &self.model,
             max_tokens: DEFAULT_MAX_TOKENS,
@@ -315,12 +350,9 @@ impl LlmClient for AnthropicClient {
     ) -> Result<LlmResponse> {
         debug!(model = %self.model, turns = turns.len(), "calling Anthropic (streaming)");
 
-        let messages: Vec<AnthropicMessage> = turns.iter().map(turn_to_anthropic).collect();
+        let messages = build_anthropic_messages(turns);
 
-        let tool_choice = (!tools.is_empty()).then_some(ToolChoice {
-            kind: "auto",
-            disable_parallel_tool_use: true,
-        });
+        let tool_choice = (!tools.is_empty()).then_some(ToolChoice { kind: "auto" });
         let body = MessagesRequest {
             model: &self.model,
             max_tokens: DEFAULT_MAX_TOKENS,
@@ -349,10 +381,8 @@ impl LlmClient for AnthropicClient {
 
         let mut buf = Vec::new();
         let mut text = String::new();
-        let mut tool_id: Option<String> = None;
-        let mut tool_name: Option<String> = None;
-        let mut tool_json = String::new();
-        let mut tool_block_index: Option<usize> = None;
+        // key: block index, value: (id, name, accumulated_json)
+        let mut tool_blocks: BTreeMap<usize, (String, String, String)> = BTreeMap::new();
 
         while let Some(chunk) = response.chunk().await.context("reading SSE stream")? {
             buf.extend_from_slice(&chunk);
@@ -368,11 +398,9 @@ impl LlmClient for AnthropicClient {
                         content_block,
                     }) => {
                         if let StreamBlock::ToolUse { id, name } = content_block {
-                            if tool_id.is_none() {
-                                tool_id = Some(id);
-                                tool_name = Some(name);
-                                tool_block_index = Some(index);
-                            }
+                            tool_blocks
+                                .entry(index)
+                                .or_insert((id, name, String::new()));
                         }
                     }
                     Ok(StreamEvent::ContentBlockDelta { index, delta }) => match delta {
@@ -381,10 +409,8 @@ impl LlmClient for AnthropicClient {
                             text.push_str(&t);
                         }
                         StreamDelta::InputJsonDelta { partial_json } => {
-                            if Some(index) == tool_block_index {
-                                tool_json.push_str(&partial_json);
-                            } else if tool_block_index.is_some() {
-                                warn!(skipped_index = index, "ignoring parallel tool call delta");
+                            if let Some(entry) = tool_blocks.get_mut(&index) {
+                                entry.2.push_str(&partial_json);
                             }
                         }
                         StreamDelta::Other => {}
@@ -400,26 +426,29 @@ impl LlmClient for AnthropicClient {
             }
         }
 
-        let tool_call = match (tool_id, tool_name) {
-            (Some(id), Some(name)) => {
-                let arguments = if tool_json.is_empty() {
+        let tool_calls = tool_blocks
+            .into_values()
+            .map(|(id, name, json)| -> Result<ToolCall> {
+                let arguments = if json.is_empty() {
                     serde_json::json!({})
                 } else {
-                    serde_json::from_str(&tool_json)
-                        .with_context(|| format!("parsing tool input JSON: {:?}", tool_json))?
+                    serde_json::from_str(&json)
+                        .with_context(|| format!("parsing tool input JSON: {:?}", json))?
                 };
-                Some(ToolCall {
+                Ok(ToolCall {
                     id,
                     name,
                     arguments,
                 })
-            }
-            _ => None,
-        };
+            })
+            .collect::<Result<Vec<_>>>()?;
 
         let content = if text.is_empty() { None } else { Some(text) };
 
-        Ok(LlmResponse { content, tool_call })
+        Ok(LlmResponse {
+            content,
+            tool_calls,
+        })
     }
 }
 
@@ -463,9 +492,11 @@ mod tests {
     #[test]
     fn assistant_tool_call_maps_to_tool_use_block() {
         let turn = ConversationTurn::AssistantToolCall {
-            id: "toolu_01".to_string(),
-            name: "read".to_string(),
-            arguments: serde_json::json!({"file_path": "/tmp/a.txt"}),
+            calls: vec![ToolCall {
+                id: "toolu_01".to_string(),
+                name: "read".to_string(),
+                arguments: serde_json::json!({"file_path": "/tmp/a.txt"}),
+            }],
             reasoning: None,
         };
         let msg = turn_to_anthropic(&turn);
@@ -475,6 +506,34 @@ mod tests {
         assert_eq!(json["id"], "toolu_01");
         assert_eq!(json["name"], "read");
         assert_eq!(json["input"]["file_path"], "/tmp/a.txt");
+    }
+
+    #[test]
+    fn assistant_parallel_tool_calls_map_to_multiple_tool_use_blocks() {
+        let turn = ConversationTurn::AssistantToolCall {
+            calls: vec![
+                ToolCall {
+                    id: "toolu_01".to_string(),
+                    name: "read".to_string(),
+                    arguments: serde_json::json!({"file_path": "/tmp/a.txt"}),
+                },
+                ToolCall {
+                    id: "toolu_02".to_string(),
+                    name: "list_dir".to_string(),
+                    arguments: serde_json::json!({"dir_path": "/tmp"}),
+                },
+            ],
+            reasoning: None,
+        };
+        let msg = turn_to_anthropic(&turn);
+        assert_eq!(msg.role, "assistant");
+        assert_eq!(msg.content.len(), 2);
+        let j0 = serde_json::to_value(&msg.content[0]).unwrap();
+        assert_eq!(j0["type"], "tool_use");
+        assert_eq!(j0["id"], "toolu_01");
+        let j1 = serde_json::to_value(&msg.content[1]).unwrap();
+        assert_eq!(j1["type"], "tool_use");
+        assert_eq!(j1["id"], "toolu_02");
     }
 
     #[test]
@@ -489,6 +548,50 @@ mod tests {
         assert_eq!(json["type"], "tool_result");
         assert_eq!(json["tool_use_id"], "toolu_01");
         assert_eq!(json["content"], "file contents here");
+    }
+
+    #[test]
+    fn consecutive_tool_results_merged_into_single_user_message() {
+        let turns = vec![
+            ConversationTurn::ToolResult {
+                tool_call_id: "toolu_01".to_string(),
+                content: "result one".to_string(),
+            },
+            ConversationTurn::ToolResult {
+                tool_call_id: "toolu_02".to_string(),
+                content: "result two".to_string(),
+            },
+        ];
+        let messages = build_anthropic_messages(&turns);
+        assert_eq!(
+            messages.len(),
+            1,
+            "consecutive ToolResult turns must merge into one message"
+        );
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[0].content.len(), 2);
+        let j0 = serde_json::to_value(&messages[0].content[0]).unwrap();
+        assert_eq!(j0["tool_use_id"], "toolu_01");
+        let j1 = serde_json::to_value(&messages[0].content[1]).unwrap();
+        assert_eq!(j1["tool_use_id"], "toolu_02");
+    }
+
+    #[test]
+    fn non_consecutive_tool_results_stay_separate() {
+        // Results from different batches (separated by an assistant turn) must not merge.
+        let turns = vec![
+            ConversationTurn::ToolResult {
+                tool_call_id: "toolu_01".to_string(),
+                content: "r1".to_string(),
+            },
+            text_turn("assistant", "ok"),
+            ConversationTurn::ToolResult {
+                tool_call_id: "toolu_02".to_string(),
+                content: "r2".to_string(),
+            },
+        ];
+        let messages = build_anthropic_messages(&turns);
+        assert_eq!(messages.len(), 3);
     }
 
     #[test]
@@ -525,9 +628,11 @@ mod tests {
     #[test]
     fn tool_call_with_reasoning_emits_text_then_tool_use_blocks() {
         let turn = ConversationTurn::AssistantToolCall {
-            id: "toolu_01".to_string(),
-            name: "read".to_string(),
-            arguments: serde_json::json!({"file_path": "/tmp/a.txt"}),
+            calls: vec![ToolCall {
+                id: "toolu_01".to_string(),
+                name: "read".to_string(),
+                arguments: serde_json::json!({"file_path": "/tmp/a.txt"}),
+            }],
             reasoning: Some("I should read the file first.".to_string()),
         };
         let msg = turn_to_anthropic(&turn);
@@ -555,7 +660,8 @@ mod tests {
         ];
         let r = parse_blocks(&blocks);
         assert_eq!(r.content.as_deref(), Some("Let me check that file."));
-        let tc = r.tool_call.unwrap();
+        assert_eq!(r.tool_calls.len(), 1);
+        let tc = r.tool_calls.into_iter().next().unwrap();
         assert_eq!(tc.id, "toolu_01");
         assert_eq!(tc.name, "read");
     }
@@ -569,7 +675,7 @@ mod tests {
         }];
         let r = parse_blocks(&blocks);
         assert!(r.content.is_none());
-        assert!(r.tool_call.is_some());
+        assert!(!r.tool_calls.is_empty());
     }
 
     #[test]
@@ -592,14 +698,38 @@ mod tests {
             r.content.as_deref(),
             Some("First thought.\nSecond thought.")
         );
-        assert!(r.tool_call.is_some());
+        assert!(!r.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn parallel_tool_use_blocks_all_captured() {
+        let blocks = vec![
+            ContentBlock::Text {
+                text: "Let me do both.".to_string(),
+            },
+            ContentBlock::ToolUse {
+                id: "toolu_01".to_string(),
+                name: "read".to_string(),
+                input: serde_json::json!({"file_path": "/a"}),
+            },
+            ContentBlock::ToolUse {
+                id: "toolu_02".to_string(),
+                name: "list_dir".to_string(),
+                input: serde_json::json!({"dir_path": "/"}),
+            },
+        ];
+        let r = parse_blocks(&blocks);
+        assert_eq!(r.content.as_deref(), Some("Let me do both."));
+        assert_eq!(r.tool_calls.len(), 2);
+        assert_eq!(r.tool_calls[0].id, "toolu_01");
+        assert_eq!(r.tool_calls[1].id, "toolu_02");
     }
 
     #[test]
     fn unknown_block_alone_returns_empty_response() {
         let r = parse_blocks(&[ContentBlock::Unknown]);
         assert!(r.content.is_none());
-        assert!(r.tool_call.is_none());
+        assert!(r.tool_calls.is_empty());
     }
 
     #[test]
@@ -612,7 +742,7 @@ mod tests {
         ];
         let r = parse_blocks(&blocks);
         assert_eq!(r.content.as_deref(), Some("thought"));
-        assert!(r.tool_call.is_none());
+        assert!(r.tool_calls.is_empty());
     }
 
     #[test]
@@ -627,20 +757,16 @@ mod tests {
         ];
         let r = parse_blocks(&blocks);
         assert!(r.content.is_none());
-        assert!(r.tool_call.is_some());
+        assert!(!r.tool_calls.is_empty());
     }
 
     // ── Streaming accumulation tests ─────────────────────────────────────────
 
-    /// Simulate the streaming loop over a set of SSE data lines and return the
-    /// accumulated tool call id, name, and raw json string.  The mpsc channel is
-    /// needed because `TextDelta` events send tokens to the UI.
-    fn run_sse_accumulation(sse_lines: &[&str]) -> (Option<String>, Option<String>, String) {
+    /// Simulate the streaming loop and return all accumulated tool calls as
+    /// `Vec<(id, name, raw_json)>` in block-index order.
+    fn run_sse_accumulation(sse_lines: &[&str]) -> Vec<(String, String, String)> {
         let (_tx, _rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let mut tool_id: Option<String> = None;
-        let mut tool_name: Option<String> = None;
-        let mut tool_json = String::new();
-        let mut tool_block_index: Option<usize> = None;
+        let mut tool_blocks: BTreeMap<usize, (String, String, String)> = BTreeMap::new();
 
         for line in sse_lines {
             let Some(data) = line.strip_prefix("data: ") else {
@@ -654,26 +780,23 @@ mod tests {
                     index,
                     content_block: StreamBlock::ToolUse { id, name },
                 } => {
-                    if tool_id.is_none() {
-                        tool_id = Some(id);
-                        tool_name = Some(name);
-                        tool_block_index = Some(index);
-                    }
+                    tool_blocks
+                        .entry(index)
+                        .or_insert((id, name, String::new()));
                 }
                 StreamEvent::ContentBlockStart { .. } => {}
-                StreamEvent::ContentBlockDelta { index, delta } => match delta {
-                    StreamDelta::TextDelta { .. } => {}
-                    StreamDelta::InputJsonDelta { partial_json } => {
-                        if Some(index) == tool_block_index {
-                            tool_json.push_str(&partial_json);
-                        }
+                StreamEvent::ContentBlockDelta {
+                    index,
+                    delta: StreamDelta::InputJsonDelta { partial_json },
+                } => {
+                    if let Some(entry) = tool_blocks.get_mut(&index) {
+                        entry.2.push_str(&partial_json);
                     }
-                    StreamDelta::Other => {}
-                },
+                }
                 _ => {}
             }
         }
-        (tool_id, tool_name, tool_json)
+        tool_blocks.into_values().collect()
     }
 
     #[test]
@@ -683,18 +806,16 @@ mod tests {
             r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"dir_path\":"}}"#,
             r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"/\"}"}}"#,
         ];
-        let (id, name, json) = run_sse_accumulation(&lines);
-        assert_eq!(id.as_deref(), Some("toolu_01"));
-        assert_eq!(name.as_deref(), Some("list_dir"));
-        let args: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let calls = run_sse_accumulation(&lines);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "toolu_01");
+        assert_eq!(calls[0].1, "list_dir");
+        let args: serde_json::Value = serde_json::from_str(&calls[0].2).unwrap();
         assert_eq!(args["dir_path"], "/");
     }
 
     #[test]
-    fn parallel_tool_calls_captures_only_first() {
-        // Two sequential tool_use blocks in the same response (parallel tool use).
-        // Only the first should be captured; the second's JSON must NOT contaminate
-        // tool_json (which would produce invalid concatenated JSON).
+    fn parallel_tool_calls_in_stream_captured_correctly() {
         let lines = [
             r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_01","name":"list_dir"}}"#,
             r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"dir_path\":\"/\"}"}}"#,
@@ -703,13 +824,17 @@ mod tests {
             r#"data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"file_path\":\"/README.md\"}"}}"#,
             r#"data: {"type":"content_block_stop","index":1}"#,
         ];
-        let (id, name, json) = run_sse_accumulation(&lines);
-        assert_eq!(id.as_deref(), Some("toolu_01"));
-        assert_eq!(name.as_deref(), Some("list_dir"));
-        // json must be valid and contain only the first tool's input
-        let args: serde_json::Value =
-            serde_json::from_str(&json).expect("tool_json must be valid JSON");
-        assert_eq!(args["dir_path"], "/");
-        assert!(args.get("file_path").is_none());
+        let calls = run_sse_accumulation(&lines);
+        assert_eq!(calls.len(), 2);
+        // first call
+        assert_eq!(calls[0].0, "toolu_01");
+        assert_eq!(calls[0].1, "list_dir");
+        let args0: serde_json::Value = serde_json::from_str(&calls[0].2).unwrap();
+        assert_eq!(args0["dir_path"], "/");
+        // second call
+        assert_eq!(calls[1].0, "toolu_02");
+        assert_eq!(calls[1].1, "read");
+        let args1: serde_json::Value = serde_json::from_str(&calls[1].2).unwrap();
+        assert_eq!(args1["file_path"], "/README.md");
     }
 }
