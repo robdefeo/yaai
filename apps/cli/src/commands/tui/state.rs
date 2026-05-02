@@ -109,17 +109,34 @@ impl AppState {
     }
 
     pub(crate) fn complete_run(&mut self, result: Result<PromptRunResult, String>) {
-        self.streaming.clear();
+        // Drain the streaming buffer before clearing it so we can commit the
+        // full accumulated text (all intermediate reasoning + final answer) as
+        // a permanent transcript entry instead of only the last answer.
+        let accumulated = std::mem::take(&mut self.streaming).raw;
         self.streaming_active = false;
         match result {
             Ok(result) => {
+                // Use accumulated streaming text when available — it contains all
+                // intermediate step reasoning plus the final answer.  Fall back to
+                // result.answer for non-streaming runs or when nothing was streamed.
+                let content = if accumulated.is_empty() {
+                    result.answer
+                } else {
+                    accumulated
+                };
                 self.transcript.push(TranscriptEntry {
                     role: TranscriptRole::Assistant,
-                    content: result.answer,
+                    content,
                 });
                 self.status = format!("Run complete in {} step(s).", result.steps_taken);
             }
             Err(err) => {
+                if !accumulated.is_empty() {
+                    self.transcript.push(TranscriptEntry {
+                        role: TranscriptRole::Assistant,
+                        content: accumulated,
+                    });
+                }
                 self.transcript.push(TranscriptEntry {
                     role: TranscriptRole::Error,
                     content: err,
@@ -269,6 +286,21 @@ mod tests {
         assert_eq!(state.transcript.len(), 2);
         assert_eq!(state.transcript[1].role, TranscriptRole::Error);
         assert_eq!(state.status, "Run failed.");
+    }
+
+    #[test]
+    fn complete_run_error_with_streamed_content_emits_both_entries() {
+        let mut state = AppState::default();
+        state.start_run("hello");
+        state.append_token("partial answer".to_string());
+        state.complete_run(Err("boom".to_string()));
+
+        assert_eq!(state.transcript.len(), 3); // user + assistant + error
+        assert_eq!(state.transcript[1].role, TranscriptRole::Assistant);
+        assert_eq!(state.transcript[1].content, "partial answer");
+        assert_eq!(state.transcript[2].role, TranscriptRole::Error);
+        assert_eq!(state.transcript[2].content, "boom");
+        assert_eq!(state.run_state, RunState::Idle);
     }
 
     #[test]

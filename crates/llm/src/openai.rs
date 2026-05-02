@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::{sse::pop_sse_line, ConversationTurn, LlmClient, LlmResponse, Message, ToolCall};
 
@@ -46,6 +46,8 @@ struct ChatRequest<'a> {
     messages: Vec<OaiMessage>,
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
     tools: &'a [Value],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parallel_tool_calls: Option<bool>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     stream: bool,
 }
@@ -127,6 +129,7 @@ struct StreamDelta {
 
 #[derive(Deserialize)]
 struct OaiStreamToolCall {
+    index: Option<usize>,
     id: Option<String>,
     function: Option<OaiStreamFunction>,
 }
@@ -143,6 +146,7 @@ struct StreamAccumulator {
     tool_id: Option<String>,
     tool_name: Option<String>,
     tool_arguments: String,
+    tool_block_index: Option<usize>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -225,6 +229,25 @@ fn apply_stream_data(
 
         if let Some(tool_calls) = choice.delta.tool_calls {
             for tool_call in tool_calls {
+                // Track and filter by the first tool call's index so parallel
+                // tool calls don't contaminate tool_arguments with a second
+                // call's JSON, which would produce invalid concatenated JSON.
+                if let Some(idx) = tool_call.index {
+                    match accumulator.tool_block_index {
+                        None => accumulator.tool_block_index = Some(idx),
+                        Some(first) if idx != first => {
+                            warn!(
+                                first_index = first,
+                                skipped_index = idx,
+                                "ignoring parallel tool call delta"
+                            );
+                            continue;
+                        }
+                        _ => {}
+                    }
+                } else if accumulator.tool_block_index.is_some() {
+                    // index absent but we already captured a call — treat as belonging to it
+                }
                 if let Some(id) = tool_call.id {
                     accumulator.tool_id = Some(id);
                 }
@@ -283,10 +306,12 @@ impl LlmClient for OpenAiClient {
         // OpenAI expects the system prompt as the first entry in the messages array.
         let messages = build_messages(system, turns);
 
+        let parallel_tool_calls = (!tools.is_empty()).then_some(false);
         let body = ChatRequest {
             model: &self.model,
             messages,
             tools,
+            parallel_tool_calls,
             stream: false,
         };
 
@@ -345,10 +370,12 @@ impl LlmClient for OpenAiClient {
         debug!(model = %self.model, turns = turns.len(), "calling OpenAI (streaming)");
 
         let messages = build_messages(system, turns);
+        let parallel_tool_calls = (!tools.is_empty()).then_some(false);
         let body = ChatRequest {
             model: &self.model,
             messages,
             tools,
+            parallel_tool_calls,
             stream: true,
         };
 
@@ -465,10 +492,15 @@ mod tests {
             model: "gpt-test",
             messages: vec![],
             tools: &[],
+            parallel_tool_calls: None,
             stream: false,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert!(json.get("tools").is_none(), "empty tools must be omitted");
+        assert!(
+            json.get("parallel_tool_calls").is_none(),
+            "parallel_tool_calls must be omitted when None"
+        );
     }
 
     #[test]
@@ -478,10 +510,12 @@ mod tests {
             model: "gpt-test",
             messages: vec![],
             tools: &tools,
+            parallel_tool_calls: Some(false),
             stream: false,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert!(json.get("tools").is_some());
+        assert_eq!(json["parallel_tool_calls"], false);
     }
 
     #[test]
@@ -490,6 +524,7 @@ mod tests {
             model: "gpt-test",
             messages: vec![],
             tools: &[],
+            parallel_tool_calls: None,
             stream: true,
         };
         let json = serde_json::to_value(&req).unwrap();
@@ -586,5 +621,48 @@ mod tests {
         let msg = turn_to_oai(&turn);
         assert!(msg.content.is_none());
         assert!(msg.tool_calls.is_some());
+    }
+
+    #[test]
+    fn parallel_tool_calls_in_stream_captures_only_first() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut accumulator = StreamAccumulator::default();
+
+        // First tool call (index 0) — id and name arrive in separate deltas.
+        apply_stream_data(
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_01","type":"function","function":{"name":"list_dir","arguments":""}}]}}]}"#,
+            &tx,
+            &mut accumulator,
+        )
+        .unwrap();
+        apply_stream_data(
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"dir_path\":\"/\"}"}}]}}]}"#,
+            &tx,
+            &mut accumulator,
+        )
+        .unwrap();
+
+        // Second tool call (index 1) — must be ignored.
+        apply_stream_data(
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_02","type":"function","function":{"name":"read","arguments":""}}]}}]}"#,
+            &tx,
+            &mut accumulator,
+        )
+        .unwrap();
+        apply_stream_data(
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{\"file_path\":\"/README.md\"}"}}]}}]}"#,
+            &tx,
+            &mut accumulator,
+        )
+        .unwrap();
+
+        let response = accumulated_response(accumulator).unwrap();
+        let tool_call = response.tool_call.unwrap();
+        assert_eq!(tool_call.id, "call_01");
+        assert_eq!(tool_call.name, "list_dir");
+        let args: serde_json::Value =
+            serde_json::from_str(&tool_call.arguments.to_string()).unwrap();
+        assert_eq!(args["dir_path"], "/");
+        assert!(args.get("file_path").is_none());
     }
 }
