@@ -166,7 +166,7 @@ async fn graceful_tool_error_continues_loop() {
 async fn empty_llm_response_returns_error() {
     let llm = StubClient::new(vec![LlmResponse {
         content: None,
-        tool_call: None,
+        tool_calls: vec![],
     }]);
     let tools = ToolRegistry::new();
     let (_tmp, tr) = tracer();
@@ -187,11 +187,11 @@ async fn reasoning_with_tool_call_stored_as_single_memory_entry() {
     let llm = StubClient::new(vec![
         LlmResponse {
             content: Some("I should read the file first.".to_string()),
-            tool_call: Some(ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call_1".to_string(),
                 name: "read".to_string(),
                 arguments: serde_json::json!({"file_path": path}),
-            }),
+            }],
         },
         LlmResponse::text("Done."),
     ]);
@@ -239,7 +239,7 @@ async fn tool_call_without_reasoning_stores_no_reasoning() {
 #[tokio::test]
 async fn standalone_text_response_stored_as_text_memory_entry() {
     // Regression: response.content = Some(...) with no tool call must create a
-    // standalone Text entry in memory. The `if response.tool_call.is_none()`
+    // standalone Text entry in memory. The `if response.tool_calls.is_empty()`
     // guard in the agent loop is the only thing keeping this path working.
     let llm = StubClient::new(vec![LlmResponse::text("Just a text answer.")]);
     let tools = ToolRegistry::new();
@@ -254,6 +254,52 @@ async fn standalone_text_response_stored_as_text_memory_entry() {
     assert_eq!(result.memory.len(), 2);
     let entry = &result.memory.entries()[1];
     assert!(matches!(&entry.content, EntryContent::Text { text } if text == "Just a text answer."));
+    tr.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn parallel_tool_calls_dispatched_and_stored() {
+    let (_f1, path1) = temp_file_path();
+    let (_f2, path2) = temp_file_path();
+    let llm = StubClient::new(vec![
+        LlmResponse {
+            content: None,
+            tool_calls: vec![
+                ToolCall {
+                    id: "call_1".to_string(),
+                    name: "read".to_string(),
+                    arguments: serde_json::json!({"file_path": path1}),
+                },
+                ToolCall {
+                    id: "call_2".to_string(),
+                    name: "read".to_string(),
+                    arguments: serde_json::json!({"file_path": path2}),
+                },
+            ],
+        },
+        LlmResponse::text("Both files read."),
+    ]);
+    let tools = ToolRegistry::new().register(ReadTool::new());
+    let (_tmp, tr) = tracer();
+
+    let result = AgentRunner::new(&cfg(5), &llm, &tools, &tr, ToolSchemaFormat::OpenAi)
+        .run("read two files")
+        .await
+        .unwrap();
+
+    assert_eq!(result.answer, "Both files read.");
+    assert_eq!(result.steps_taken, 2);
+
+    // user task + one ToolCall batch entry + two ToolResult entries + final answer = 5
+    assert_eq!(result.memory.len(), 5);
+
+    // The single batch entry carries both calls.
+    let batch_entry = &result.memory.entries()[1];
+    assert!(matches!(
+        &batch_entry.content,
+        EntryContent::ToolCall { calls, .. } if calls.len() == 2
+    ));
+
     tr.close().await.unwrap();
 }
 

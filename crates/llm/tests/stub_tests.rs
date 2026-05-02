@@ -66,18 +66,19 @@ fn message_assistant_sets_role() {
 }
 
 #[test]
-fn llm_response_text_has_content_no_tool_call() {
+fn llm_response_text_has_content_no_tool_calls() {
     let r = LlmResponse::text("answer");
     assert_eq!(r.content.as_deref(), Some("answer"));
-    assert!(r.tool_call.is_none());
+    assert!(r.tool_calls.is_empty());
 }
 
 #[test]
-fn llm_response_tool_has_tool_call_no_content() {
+fn llm_response_tool_has_single_tool_call_no_content() {
     let args = serde_json::json!({"x": 1});
     let r = LlmResponse::tool("call_1", "my_tool", args.clone());
     assert!(r.content.is_none());
-    let tc = r.tool_call.unwrap();
+    assert_eq!(r.tool_calls.len(), 1);
+    let tc = &r.tool_calls[0];
     assert_eq!(tc.id, "call_1");
     assert_eq!(tc.name, "my_tool");
     assert_eq!(tc.arguments, args);
@@ -87,7 +88,7 @@ fn llm_response_tool_has_tool_call_no_content() {
 fn llm_response_neither_is_not_final() {
     let r = LlmResponse {
         content: None,
-        tool_call: None,
+        tool_calls: vec![],
     };
     assert!(!r.is_final_answer());
 }
@@ -133,7 +134,7 @@ fn llm_response_text_serde_round_trip() {
     let json = serde_json::to_string(&r).unwrap();
     let r2: LlmResponse = serde_json::from_str(&json).unwrap();
     assert_eq!(r2.content.as_deref(), Some("the answer"));
-    assert!(r2.tool_call.is_none());
+    assert!(r2.tool_calls.is_empty());
 }
 
 #[test]
@@ -141,7 +142,8 @@ fn llm_response_tool_serde_round_trip() {
     let r = LlmResponse::tool("call_1", "calc", serde_json::json!({"expr": "1+1"}));
     let json = serde_json::to_string(&r).unwrap();
     let r2: LlmResponse = serde_json::from_str(&json).unwrap();
-    let tc = r2.tool_call.unwrap();
+    assert_eq!(r2.tool_calls.len(), 1);
+    let tc = &r2.tool_calls[0];
     assert_eq!(tc.name, "calc");
     assert_eq!(tc.id, "call_1");
 }

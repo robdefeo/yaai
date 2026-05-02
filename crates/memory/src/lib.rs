@@ -17,6 +17,15 @@ pub enum Role {
     Tool,
 }
 
+/// A single tool call stored in memory — id, name, and arguments only.
+/// Reasoning is on the parent [`EntryContent::ToolCall`] entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: Value,
+}
+
 /// The content of a memory entry — either plain text, a tool invocation made
 /// by the assistant, or the result returned to the assistant after execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,10 +35,9 @@ pub enum EntryContent {
         text: String,
     },
     ToolCall {
-        id: String,
-        name: String,
-        arguments: Value,
-        /// Text emitted by the model before the tool call (e.g. chain-of-thought).
+        /// One or more tool calls from a single LLM turn (parallel tool use).
+        calls: Vec<MemoryToolCall>,
+        /// Text emitted by the model before the tool calls (e.g. chain-of-thought).
         /// Preserved so it can be replayed as part of the same assistant message.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reasoning: Option<String>,
@@ -154,9 +162,11 @@ mod tests {
         mem.add_entry(
             Role::Assistant,
             EntryContent::ToolCall {
-                id: "call_1".into(),
-                name: "read".into(),
-                arguments: serde_json::json!({ "file_path": "/LICENSE" }),
+                calls: vec![MemoryToolCall {
+                    id: "call_1".into(),
+                    name: "read".into(),
+                    arguments: serde_json::json!({ "file_path": "/LICENSE" }),
+                }],
                 reasoning: None,
             },
         );
@@ -171,7 +181,7 @@ mod tests {
         assert_eq!(mem.len(), 2);
         assert!(matches!(
             &mem.entries()[0].content,
-            EntryContent::ToolCall { id, .. } if id == "call_1"
+            EntryContent::ToolCall { calls, .. } if calls[0].id == "call_1"
         ));
         assert!(matches!(
             &mem.entries()[1].content,

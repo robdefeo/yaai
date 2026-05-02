@@ -4,12 +4,13 @@
 //! final answer or `max_steps` is reached.
 
 use anyhow::{bail, Result};
+use futures::future;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 use uuid::Uuid;
-use yaai_llm::{ConversationTurn, LlmClient, Message};
-use yaai_memory::{EntryContent, Role, SessionMemory};
+use yaai_llm::{ConversationTurn, LlmClient, Message, ToolCall};
+use yaai_memory::{EntryContent, MemoryToolCall, Role, SessionMemory};
 use yaai_tools::{ToolRegistry, ToolSchemaFormat};
 use yaai_tracer::{EventKind, Tracer};
 
@@ -116,17 +117,19 @@ impl<'a> AgentRunner<'a> {
                         role: e.role.to_string(),
                         content: text.clone(),
                     }),
-                    EntryContent::ToolCall {
-                        id,
-                        name,
-                        arguments,
-                        reasoning,
-                    } => ConversationTurn::AssistantToolCall {
-                        id: id.clone(),
-                        name: name.clone(),
-                        arguments: arguments.clone(),
-                        reasoning: reasoning.clone(),
-                    },
+                    EntryContent::ToolCall { calls, reasoning } => {
+                        ConversationTurn::AssistantToolCall {
+                            calls: calls
+                                .iter()
+                                .map(|c| ToolCall {
+                                    id: c.id.clone(),
+                                    name: c.name.clone(),
+                                    arguments: c.arguments.clone(),
+                                })
+                                .collect(),
+                            reasoning: reasoning.clone(),
+                        }
+                    }
                     EntryContent::ToolResult {
                         tool_call_id,
                         content,
@@ -162,7 +165,7 @@ impl<'a> AgentRunner<'a> {
                 }
             };
 
-            if response.content.is_none() && response.tool_call.is_none() {
+            if response.content.is_none() && response.tool_calls.is_empty() {
                 let msg = format!(
                     "agent '{}' received an empty LLM response at step {}",
                     self.config.id, step
@@ -187,59 +190,81 @@ impl<'a> AgentRunner<'a> {
                     .emit(&self.config.id, step, EventKind::Decision, text)?;
                 // Only store a standalone text entry when there is no tool call.
                 // When a tool call is present, the reasoning is stored inside it.
-                if response.tool_call.is_none() {
+                if response.tool_calls.is_empty() {
                     self.memory.add(Role::Assistant, text);
                 }
             }
 
-            if let Some(tc) = &response.tool_call {
-                info!(agent = %self.config.id, tool = %tc.name, step, "tool call");
+            if !response.tool_calls.is_empty() {
+                for tc in &response.tool_calls {
+                    info!(agent = %self.config.id, tool = %tc.name, step, "tool call");
+                    self.tracer.emit(
+                        &self.config.id,
+                        step,
+                        EventKind::ToolCall,
+                        serde_json::json!({ "tool": tc.name, "args": tc.arguments }),
+                    )?;
+                }
 
-                self.tracer.emit(
-                    &self.config.id,
-                    step,
-                    EventKind::ToolCall,
-                    serde_json::json!({ "tool": tc.name, "args": tc.arguments }),
-                )?;
-
-                // Store reasoning alongside the tool call so both are replayed as
-                // a single assistant message — required by Anthropic and OpenAI.
+                // Store reasoning alongside all tool calls so the batch is replayed
+                // as a single assistant message — required by Anthropic and OpenAI.
                 self.memory.add_entry(
                     Role::Assistant,
                     EntryContent::ToolCall {
-                        id: tc.id.clone(),
-                        name: tc.name.clone(),
-                        arguments: tc.arguments.clone(),
+                        calls: response
+                            .tool_calls
+                            .iter()
+                            .map(|tc| MemoryToolCall {
+                                id: tc.id.clone(),
+                                name: tc.name.clone(),
+                                arguments: tc.arguments.clone(),
+                            })
+                            .collect(),
                         reasoning: response.content.clone(),
                     },
                 );
 
-                let observation = match self.tools.dispatch(&tc.name, tc.arguments.clone()).await {
-                    Ok(result) => {
-                        self.tracer
-                            .emit(&self.config.id, step, EventKind::ToolResult, &result)?;
-                        result.to_string()
-                    }
-                    Err(e) => {
-                        let msg = format!("Tool error: {e}");
-                        self.tracer.emit(
-                            &self.config.id,
-                            step,
-                            EventKind::Error,
-                            serde_json::json!({ "error": &msg }),
-                        )?;
-                        warn!(agent = %self.config.id, error = %e, "tool execution failed");
-                        msg
-                    }
-                };
+                // Dispatch all tool calls concurrently.
+                let tools = self.tools;
+                let dispatch_futs: Vec<_> = response
+                    .tool_calls
+                    .iter()
+                    .map(|tc| {
+                        let name = tc.name.clone();
+                        let args = tc.arguments.clone();
+                        async move { tools.dispatch(&name, args).await }
+                    })
+                    .collect();
+                let dispatch_results = future::join_all(dispatch_futs).await;
 
-                self.memory.add_entry(
-                    Role::User,
-                    EntryContent::ToolResult {
-                        tool_call_id: tc.id.clone(),
-                        content: observation,
-                    },
-                );
+                for (tc, result) in response.tool_calls.iter().zip(dispatch_results) {
+                    let observation = match result {
+                        Ok(val) => {
+                            self.tracer
+                                .emit(&self.config.id, step, EventKind::ToolResult, &val)?;
+                            val.to_string()
+                        }
+                        Err(e) => {
+                            let msg = format!("Tool error: {e}");
+                            self.tracer.emit(
+                                &self.config.id,
+                                step,
+                                EventKind::Error,
+                                serde_json::json!({ "error": &msg }),
+                            )?;
+                            warn!(agent = %self.config.id, error = %e, "tool execution failed");
+                            msg
+                        }
+                    };
+
+                    self.memory.add_entry(
+                        Role::User,
+                        EntryContent::ToolResult {
+                            tool_call_id: tc.id.clone(),
+                            content: observation,
+                        },
+                    );
+                }
             } else if response.is_final_answer() {
                 let answer = response.content.unwrap_or_default();
                 info!(agent = %self.config.id, step, "final answer");

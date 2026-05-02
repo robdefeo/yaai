@@ -4,8 +4,9 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::{sse::pop_sse_line, ConversationTurn, LlmClient, LlmResponse, Message, ToolCall};
 
@@ -46,8 +47,6 @@ struct ChatRequest<'a> {
     messages: Vec<OaiMessage>,
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
     tools: &'a [Value],
-    #[serde(skip_serializing_if = "Option::is_none")]
-    parallel_tool_calls: Option<bool>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     stream: bool,
 }
@@ -143,10 +142,8 @@ struct OaiStreamFunction {
 #[derive(Debug, Default)]
 struct StreamAccumulator {
     text: String,
-    tool_id: Option<String>,
-    tool_name: Option<String>,
-    tool_arguments: String,
-    tool_block_index: Option<usize>,
+    // key: tool call index, value: (id, name, accumulated_args_json)
+    tools: BTreeMap<usize, (Option<String>, Option<String>, String)>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -179,22 +176,22 @@ fn turn_to_oai(turn: &ConversationTurn) -> OaiMessage {
             tool_calls: None,
             tool_call_id: None,
         },
-        ConversationTurn::AssistantToolCall {
-            id,
-            name,
-            arguments,
-            reasoning,
-        } => OaiMessage {
+        ConversationTurn::AssistantToolCall { calls, reasoning } => OaiMessage {
             role: "assistant",
             content: reasoning.clone(),
-            tool_calls: Some(vec![OaiOutboundToolCall {
-                id: id.clone(),
-                kind: "function",
-                function: OaiOutboundFunction {
-                    name: name.clone(),
-                    arguments: arguments.to_string(),
-                },
-            }]),
+            tool_calls: Some(
+                calls
+                    .iter()
+                    .map(|tc| OaiOutboundToolCall {
+                        id: tc.id.clone(),
+                        kind: "function",
+                        function: OaiOutboundFunction {
+                            name: tc.name.clone(),
+                            arguments: tc.arguments.to_string(),
+                        },
+                    })
+                    .collect(),
+            ),
             tool_call_id: None,
         },
         ConversationTurn::ToolResult {
@@ -229,34 +226,21 @@ fn apply_stream_data(
 
         if let Some(tool_calls) = choice.delta.tool_calls {
             for tool_call in tool_calls {
-                // Track and filter by the first tool call's index so parallel
-                // tool calls don't contaminate tool_arguments with a second
-                // call's JSON, which would produce invalid concatenated JSON.
-                if let Some(idx) = tool_call.index {
-                    match accumulator.tool_block_index {
-                        None => accumulator.tool_block_index = Some(idx),
-                        Some(first) if idx != first => {
-                            warn!(
-                                first_index = first,
-                                skipped_index = idx,
-                                "ignoring parallel tool call delta"
-                            );
-                            continue;
-                        }
-                        _ => {}
-                    }
-                } else if accumulator.tool_block_index.is_some() {
-                    // index absent but we already captured a call — treat as belonging to it
-                }
+                let idx = tool_call.index.unwrap_or(0);
+                let entry = accumulator
+                    .tools
+                    .entry(idx)
+                    .or_insert((None, None, String::new()));
+
                 if let Some(id) = tool_call.id {
-                    accumulator.tool_id = Some(id);
+                    entry.0 = Some(id);
                 }
                 if let Some(function) = tool_call.function {
                     if let Some(name) = function.name {
-                        accumulator.tool_name = Some(name);
+                        entry.1 = Some(name);
                     }
                     if let Some(arguments) = function.arguments {
-                        accumulator.tool_arguments.push_str(&arguments);
+                        entry.2.push_str(&arguments);
                     }
                 }
             }
@@ -267,22 +251,25 @@ fn apply_stream_data(
 }
 
 fn accumulated_response(accumulator: StreamAccumulator) -> Result<LlmResponse> {
-    let tool_call = match (accumulator.tool_id, accumulator.tool_name) {
-        (Some(id), Some(name)) => {
-            let arguments = if accumulator.tool_arguments.is_empty() {
-                serde_json::json!({})
-            } else {
-                serde_json::from_str(&accumulator.tool_arguments)
-                    .context("parsing streamed tool call arguments")?
-            };
-            Some(ToolCall {
-                id,
-                name,
-                arguments,
-            })
-        }
-        _ => None,
-    };
+    let tool_calls = accumulator
+        .tools
+        .into_values()
+        .filter_map(|(id, name, args_json)| match (id, name) {
+            (Some(id), Some(name)) => {
+                let arguments = if args_json.is_empty() {
+                    serde_json::json!({})
+                } else {
+                    serde_json::from_str(&args_json).ok()?
+                };
+                Some(ToolCall {
+                    id,
+                    name,
+                    arguments,
+                })
+            }
+            _ => None,
+        })
+        .collect();
 
     let content = if accumulator.text.is_empty() {
         None
@@ -290,7 +277,10 @@ fn accumulated_response(accumulator: StreamAccumulator) -> Result<LlmResponse> {
         Some(accumulator.text)
     };
 
-    Ok(LlmResponse { content, tool_call })
+    Ok(LlmResponse {
+        content,
+        tool_calls,
+    })
 }
 
 #[async_trait]
@@ -306,12 +296,10 @@ impl LlmClient for OpenAiClient {
         // OpenAI expects the system prompt as the first entry in the messages array.
         let messages = build_messages(system, turns);
 
-        let parallel_tool_calls = (!tools.is_empty()).then_some(false);
         let body = ChatRequest {
             model: &self.model,
             messages,
             tools,
-            parallel_tool_calls,
             stream: false,
         };
 
@@ -339,24 +327,31 @@ impl LlmClient for OpenAiClient {
             .context("no choices in OpenAI response")?
             .message;
 
-        if let Some(tool_calls) = msg.tool_calls {
-            if let Some(tc) = tool_calls.into_iter().next() {
-                let args: Value = serde_json::from_str(&tc.function.arguments)
-                    .context("parsing tool call arguments")?;
-                return Ok(LlmResponse {
-                    content: msg.content, // preserve any reasoning alongside the tool call
-                    tool_call: Some(ToolCall {
+        if let Some(raw_calls) = msg.tool_calls {
+            let tool_calls = raw_calls
+                .into_iter()
+                .map(|tc| {
+                    let args: Value = serde_json::from_str(&tc.function.arguments)
+                        .context("parsing tool call arguments")?;
+                    Ok(ToolCall {
                         id: tc.id,
                         name: tc.function.name,
                         arguments: args,
-                    }),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            if !tool_calls.is_empty() {
+                return Ok(LlmResponse {
+                    content: msg.content,
+                    tool_calls,
                 });
             }
         }
 
         Ok(LlmResponse {
             content: msg.content,
-            tool_call: None,
+            tool_calls: vec![],
         })
     }
 
@@ -370,12 +365,10 @@ impl LlmClient for OpenAiClient {
         debug!(model = %self.model, turns = turns.len(), "calling OpenAI (streaming)");
 
         let messages = build_messages(system, turns);
-        let parallel_tool_calls = (!tools.is_empty()).then_some(false);
         let body = ChatRequest {
             model: &self.model,
             messages,
             tools,
-            parallel_tool_calls,
             stream: true,
         };
 
@@ -453,9 +446,11 @@ mod tests {
     #[test]
     fn assistant_tool_call_serializes_to_tool_calls_array() {
         let turn = ConversationTurn::AssistantToolCall {
-            id: "call_01".to_string(),
-            name: "read".to_string(),
-            arguments: serde_json::json!({"file_path": "/tmp/a.txt"}),
+            calls: vec![ToolCall {
+                id: "call_01".to_string(),
+                name: "read".to_string(),
+                arguments: serde_json::json!({"file_path": "/tmp/a.txt"}),
+            }],
             reasoning: None,
         };
         let msg = turn_to_oai(&turn);
@@ -471,6 +466,30 @@ mod tests {
         // arguments must be a JSON string (OpenAI wire format)
         let args: serde_json::Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
         assert_eq!(args["file_path"], "/tmp/a.txt");
+    }
+
+    #[test]
+    fn assistant_parallel_tool_calls_serialize_to_multiple_entries() {
+        let turn = ConversationTurn::AssistantToolCall {
+            calls: vec![
+                ToolCall {
+                    id: "call_01".to_string(),
+                    name: "read".to_string(),
+                    arguments: serde_json::json!({"file_path": "/a"}),
+                },
+                ToolCall {
+                    id: "call_02".to_string(),
+                    name: "list_dir".to_string(),
+                    arguments: serde_json::json!({"dir_path": "/"}),
+                },
+            ],
+            reasoning: None,
+        };
+        let msg = turn_to_oai(&turn);
+        let calls = msg.tool_calls.unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].id, "call_01");
+        assert_eq!(calls[1].id, "call_02");
     }
 
     #[test]
@@ -492,15 +511,10 @@ mod tests {
             model: "gpt-test",
             messages: vec![],
             tools: &[],
-            parallel_tool_calls: None,
             stream: false,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert!(json.get("tools").is_none(), "empty tools must be omitted");
-        assert!(
-            json.get("parallel_tool_calls").is_none(),
-            "parallel_tool_calls must be omitted when None"
-        );
     }
 
     #[test]
@@ -510,12 +524,14 @@ mod tests {
             model: "gpt-test",
             messages: vec![],
             tools: &tools,
-            parallel_tool_calls: Some(false),
             stream: false,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert!(json.get("tools").is_some());
-        assert_eq!(json["parallel_tool_calls"], false);
+        assert!(
+            json.get("parallel_tool_calls").is_none(),
+            "parallel_tool_calls must not be set — we let the API default to enabled"
+        );
     }
 
     #[test]
@@ -524,7 +540,6 @@ mod tests {
             model: "gpt-test",
             messages: vec![],
             tools: &[],
-            parallel_tool_calls: None,
             stream: true,
         };
         let json = serde_json::to_value(&req).unwrap();
@@ -553,7 +568,7 @@ mod tests {
         assert_eq!(rx.try_recv().unwrap(), "world");
         let response = accumulated_response(accumulator).unwrap();
         assert_eq!(response.content.as_deref(), Some("hello world"));
-        assert!(response.tool_call.is_none());
+        assert!(response.tool_calls.is_empty());
     }
 
     #[test]
@@ -576,7 +591,8 @@ mod tests {
 
         let response = accumulated_response(accumulator).unwrap();
         assert!(response.content.is_none());
-        let tool_call = response.tool_call.unwrap();
+        assert_eq!(response.tool_calls.len(), 1);
+        let tool_call = &response.tool_calls[0];
         assert_eq!(tool_call.id, "call_01");
         assert_eq!(tool_call.name, "read");
         assert_eq!(tool_call.arguments["file_path"], "/tmp/a.txt");
@@ -598,9 +614,11 @@ mod tests {
     #[test]
     fn tool_call_with_reasoning_sets_content_alongside_tool_calls() {
         let turn = ConversationTurn::AssistantToolCall {
-            id: "call_01".to_string(),
-            name: "read".to_string(),
-            arguments: serde_json::json!({"file_path": "/tmp/a.txt"}),
+            calls: vec![ToolCall {
+                id: "call_01".to_string(),
+                name: "read".to_string(),
+                arguments: serde_json::json!({"file_path": "/tmp/a.txt"}),
+            }],
             reasoning: Some("I should read the file.".to_string()),
         };
         let msg = turn_to_oai(&turn);
@@ -613,9 +631,11 @@ mod tests {
     #[test]
     fn tool_call_without_reasoning_has_no_content() {
         let turn = ConversationTurn::AssistantToolCall {
-            id: "call_02".to_string(),
-            name: "read".to_string(),
-            arguments: serde_json::json!({}),
+            calls: vec![ToolCall {
+                id: "call_02".to_string(),
+                name: "read".to_string(),
+                arguments: serde_json::json!({}),
+            }],
             reasoning: None,
         };
         let msg = turn_to_oai(&turn);
@@ -624,11 +644,11 @@ mod tests {
     }
 
     #[test]
-    fn parallel_tool_calls_in_stream_captures_only_first() {
+    fn parallel_tool_calls_in_stream_captured_correctly() {
         let (tx, _rx) = mpsc::unbounded_channel();
         let mut accumulator = StreamAccumulator::default();
 
-        // First tool call (index 0) — id and name arrive in separate deltas.
+        // First tool call (index 0)
         apply_stream_data(
             r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_01","type":"function","function":{"name":"list_dir","arguments":""}}]}}]}"#,
             &tx,
@@ -642,7 +662,7 @@ mod tests {
         )
         .unwrap();
 
-        // Second tool call (index 1) — must be ignored.
+        // Second tool call (index 1)
         apply_stream_data(
             r#"{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_02","type":"function","function":{"name":"read","arguments":""}}]}}]}"#,
             &tx,
@@ -657,12 +677,12 @@ mod tests {
         .unwrap();
 
         let response = accumulated_response(accumulator).unwrap();
-        let tool_call = response.tool_call.unwrap();
-        assert_eq!(tool_call.id, "call_01");
-        assert_eq!(tool_call.name, "list_dir");
-        let args: serde_json::Value =
-            serde_json::from_str(&tool_call.arguments.to_string()).unwrap();
-        assert_eq!(args["dir_path"], "/");
-        assert!(args.get("file_path").is_none());
+        assert_eq!(response.tool_calls.len(), 2);
+        assert_eq!(response.tool_calls[0].id, "call_01");
+        assert_eq!(response.tool_calls[0].name, "list_dir");
+        assert_eq!(response.tool_calls[0].arguments["dir_path"], "/");
+        assert_eq!(response.tool_calls[1].id, "call_02");
+        assert_eq!(response.tool_calls[1].name, "read");
+        assert_eq!(response.tool_calls[1].arguments["file_path"], "/README.md");
     }
 }

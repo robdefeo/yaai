@@ -68,11 +68,9 @@ impl Message {
 pub enum ConversationTurn {
     Text(Message),
     AssistantToolCall {
-        /// Provider-issued call ID used to correlate result messages.
-        id: String,
-        name: String,
-        arguments: Value,
-        /// Text the model emitted before choosing this tool call (chain-of-thought).
+        /// One or more tool calls emitted in this turn (parallel tool use).
+        calls: Vec<ToolCall>,
+        /// Text the model emitted before the tool calls (chain-of-thought).
         reasoning: Option<String>,
     },
     ToolResult {
@@ -95,32 +93,32 @@ pub struct ToolCall {
 pub struct LlmResponse {
     /// Free-text content (reasoning, final answer, etc.).
     pub content: Option<String>,
-    /// Tool call, if the LLM chose to invoke a tool this step.
-    pub tool_call: Option<ToolCall>,
+    /// Tool calls emitted this step — empty when the model returned a final answer.
+    pub tool_calls: Vec<ToolCall>,
 }
 
 impl LlmResponse {
     pub fn text(content: impl Into<String>) -> Self {
         Self {
             content: Some(content.into()),
-            tool_call: None,
+            tool_calls: vec![],
         }
     }
 
     pub fn tool(id: impl Into<String>, name: impl Into<String>, arguments: Value) -> Self {
         Self {
             content: None,
-            tool_call: Some(ToolCall {
+            tool_calls: vec![ToolCall {
                 id: id.into(),
                 name: name.into(),
                 arguments,
-            }),
+            }],
         }
     }
 
-    /// True when the response contains text and no tool call — signals loop end.
+    /// True when the response contains text and no tool calls — signals loop end.
     pub fn is_final_answer(&self) -> bool {
-        self.tool_call.is_none() && self.content.is_some()
+        self.tool_calls.is_empty() && self.content.is_some()
     }
 }
 
